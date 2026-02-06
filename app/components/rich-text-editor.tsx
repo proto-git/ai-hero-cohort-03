@@ -4,6 +4,7 @@ import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Placeholder from "@tiptap/extension-placeholder";
+import { SlashCommands } from "./slash-commands";
 import { common, createLowlight } from "lowlight";
 import {
   Bold,
@@ -92,6 +93,7 @@ export function RichTextEditor({
       Placeholder.configure({
         placeholder,
       }),
+      SlashCommands,
     ],
     content,
     onUpdate({ editor }) {

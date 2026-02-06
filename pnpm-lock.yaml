@@ -38,6 +38,9 @@ importers:
       '@tiptap/starter-kit':
         specifier: ^3.19.0
         version: 3.19.0
+      '@tiptap/suggestion':
+        specifier: ^3.19.0
+        version: 3.19.0(@tiptap/core@3.19.0(@tiptap/pm@3.19.0))(@tiptap/pm@3.19.0)
       better-sqlite3:
         specifier: ^11.9.1
         version: 11.10.0
@@ -2024,6 +2027,12 @@ packages:
 
   '@tiptap/starter-kit@3.19.0':
     resolution: {integrity: sha512-dTCkHEz+Y8ADxX7h+xvl6caAj+3nII/wMB1rTQchSuNKqJTOrzyUsCWm094+IoZmLT738wANE0fRIgziNHs/ug==}
+
+  '@tiptap/suggestion@3.19.0':
+    resolution: {integrity: sha512-tUZwMRFqTVPIo566ZmHNRteyZxJy2EE4FA+S3IeIUOOvY6AW0h1imhbpBO7sXV8CeEQvpa+2DWwLvy7L3vmstA==}
+    peerDependencies:
+      '@tiptap/core': ^3.19.0
+      '@tiptap/pm': ^3.19.0
 
   '@ts-morph/common@0.27.0':
     resolution: {integrity: sha512-Wf29UqxWDpc+i61k3oIOzcUfQt79PIT9y/MWfAGlrkjg6lBC1hwDECLXPVJAhWjiGbfBCxZd65F/LIZF3+jeJQ==}
@@ -5964,6 +5973,11 @@ snapshots:
       '@tiptap/extension-text': 3.19.0(@tiptap/core@3.19.0(@tiptap/pm@3.19.0))
       '@tiptap/extension-underline': 3.19.0(@tiptap/core@3.19.0(@tiptap/pm@3.19.0))
       '@tiptap/extensions': 3.19.0(@tiptap/core@3.19.0(@tiptap/pm@3.19.0))(@tiptap/pm@3.19.0)
+      '@tiptap/pm': 3.19.0
+
+  '@tiptap/suggestion@3.19.0(@tiptap/core@3.19.0(@tiptap/pm@3.19.0))(@tiptap/pm@3.19.0)':
+    dependencies:
+      '@tiptap/core': 3.19.0(@tiptap/pm@3.19.0)
       '@tiptap/pm': 3.19.0
 
   '@ts-morph/common@0.27.0':
