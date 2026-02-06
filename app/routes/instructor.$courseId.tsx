@@ -14,6 +14,12 @@ import {
   deleteModule,
   getModuleById,
 } from "~/services/moduleService";
+import {
+  createLesson,
+  updateLessonTitle,
+  deleteLesson,
+  getLessonById,
+} from "~/services/lessonService";
 import { getEnrollmentCountForCourse } from "~/services/enrollmentService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
@@ -185,6 +191,62 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
     deleteModule(moduleId);
     return { success: true, field: "module" };
+  }
+
+  if (intent === "add-lesson") {
+    const moduleId = parseInt(formData.get("moduleId") as string, 10);
+    const title = (formData.get("title") as string)?.trim();
+    if (isNaN(moduleId)) {
+      return data({ error: "Invalid module ID." }, { status: 400 });
+    }
+    if (!title) {
+      return data({ error: "Lesson title cannot be empty." }, { status: 400 });
+    }
+    const mod = getModuleById(moduleId);
+    if (!mod || mod.courseId !== courseId) {
+      return data({ error: "Module not found in this course." }, { status: 404 });
+    }
+    createLesson(moduleId, title, null, null, null, null);
+    return { success: true, field: "lesson" };
+  }
+
+  if (intent === "rename-lesson") {
+    const lessonId = parseInt(formData.get("lessonId") as string, 10);
+    const title = (formData.get("title") as string)?.trim();
+    if (isNaN(lessonId)) {
+      return data({ error: "Invalid lesson ID." }, { status: 400 });
+    }
+    if (!title) {
+      return data({ error: "Lesson title cannot be empty." }, { status: 400 });
+    }
+    const lesson = getLessonById(lessonId);
+    if (!lesson) {
+      return data({ error: "Lesson not found." }, { status: 404 });
+    }
+    // Verify lesson belongs to a module in this course
+    const mod = getModuleById(lesson.moduleId);
+    if (!mod || mod.courseId !== courseId) {
+      return data({ error: "Lesson not found in this course." }, { status: 404 });
+    }
+    updateLessonTitle(lessonId, title);
+    return { success: true, field: "lesson" };
+  }
+
+  if (intent === "delete-lesson") {
+    const lessonId = parseInt(formData.get("lessonId") as string, 10);
+    if (isNaN(lessonId)) {
+      return data({ error: "Invalid lesson ID." }, { status: 400 });
+    }
+    const lesson = getLessonById(lessonId);
+    if (!lesson) {
+      return data({ error: "Lesson not found." }, { status: 404 });
+    }
+    const mod = getModuleById(lesson.moduleId);
+    if (!mod || mod.courseId !== courseId) {
+      return data({ error: "Lesson not found in this course." }, { status: 404 });
+    }
+    deleteLesson(lessonId);
+    return { success: true, field: "lesson" };
   }
 
   throw data("Invalid action.", { status: 400 });
@@ -553,6 +615,207 @@ function AddModuleForm() {
   );
 }
 
+function InlineEditableLessonTitle({
+  value,
+  lessonId,
+}: {
+  value: string;
+  lessonId: number;
+}) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValue, setEditValue] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const fetcher = useFetcher();
+
+  useEffect(() => {
+    if (isEditing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [isEditing]);
+
+  useEffect(() => {
+    setEditValue(value);
+  }, [value]);
+
+  function handleSave() {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== value) {
+      fetcher.submit(
+        { intent: "rename-lesson", lessonId: String(lessonId), title: trimmed },
+        { method: "post" }
+      );
+    }
+    setIsEditing(false);
+  }
+
+  function handleCancel() {
+    setEditValue(value);
+    setIsEditing(false);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleSave();
+    } else if (e.key === "Escape") {
+      handleCancel();
+    }
+  }
+
+  if (isEditing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value)}
+        onBlur={handleSave}
+        onKeyDown={handleKeyDown}
+        className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm outline-none ring-offset-background focus-visible:ring-2 focus-visible:ring-ring"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => setIsEditing(true)}
+      className="group flex items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-sm hover:bg-muted"
+    >
+      <span className="flex-1">{value}</span>
+      <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" />
+    </button>
+  );
+}
+
+function DeleteLessonButton({ lessonId, lessonTitle }: { lessonId: number; lessonTitle: string }) {
+  const [confirming, setConfirming] = useState(false);
+  const fetcher = useFetcher();
+
+  if (confirming) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-destructive">Delete?</span>
+        <Button
+          variant="destructive"
+          size="sm"
+          className="h-6 text-xs"
+          onClick={() => {
+            fetcher.submit(
+              { intent: "delete-lesson", lessonId: String(lessonId) },
+              { method: "post" }
+            );
+            setConfirming(false);
+          }}
+        >
+          Confirm
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 text-xs"
+          onClick={() => setConfirming(false)}
+        >
+          Cancel
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+      onClick={() => setConfirming(true)}
+    >
+      <Trash2 className="size-3.5" />
+    </Button>
+  );
+}
+
+function AddLessonForm({ moduleId }: { moduleId: number }) {
+  const [isAdding, setIsAdding] = useState(false);
+  const [title, setTitle] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const fetcher = useFetcher();
+
+  useEffect(() => {
+    if (isAdding && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [isAdding]);
+
+  useEffect(() => {
+    if (fetcher.state === "idle" && fetcher.data?.success) {
+      setTitle("");
+      setIsAdding(false);
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  function handleSubmit() {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    fetcher.submit(
+      { intent: "add-lesson", moduleId: String(moduleId), title: trimmed },
+      { method: "post" }
+    );
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleSubmit();
+    } else if (e.key === "Escape") {
+      setTitle("");
+      setIsAdding(false);
+    }
+  }
+
+  if (!isAdding) {
+    return (
+      <Button
+        variant="ghost"
+        size="sm"
+        onClick={() => setIsAdding(true)}
+        className="mt-2 text-muted-foreground"
+      >
+        <Plus className="mr-1 size-3.5" />
+        Add Lesson
+      </Button>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <Input
+        ref={inputRef}
+        type="text"
+        placeholder="Lesson title..."
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onKeyDown={handleKeyDown}
+        className="max-w-xs text-sm"
+      />
+      <Button size="sm" className="h-8" onClick={handleSubmit} disabled={!title.trim()}>
+        Add
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-8"
+        onClick={() => {
+          setTitle("");
+          setIsAdding(false);
+        }}
+      >
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
 function statusBadgeColor(status: string) {
   switch (status) {
     case CourseStatus.Published:
@@ -695,23 +958,33 @@ export default function InstructorCourseEditor({
                       No lessons yet.
                     </p>
                   ) : (
-                    <ul className="space-y-2">
+                    <ul className="space-y-1">
                       {mod.lessons.map((lesson) => (
                         <li key={lesson.id}>
-                          <div className="flex items-center gap-3 px-3 py-2 text-sm">
+                          <div className="flex items-center gap-3 px-3 py-1.5 text-sm">
                             <Circle className="size-4 shrink-0 text-muted-foreground" />
-                            <span className="flex-1">{lesson.title}</span>
+                            <div className="flex-1">
+                              <InlineEditableLessonTitle
+                                value={lesson.title}
+                                lessonId={lesson.id}
+                              />
+                            </div>
                             {lesson.durationMinutes && (
                               <span className="flex items-center gap-1 text-xs text-muted-foreground">
                                 <Clock className="size-3" />
                                 {lesson.durationMinutes}m
                               </span>
                             )}
+                            <DeleteLessonButton
+                              lessonId={lesson.id}
+                              lessonTitle={lesson.title}
+                            />
                           </div>
                         </li>
                       ))}
                     </ul>
                   )}
+                  <AddLessonForm moduleId={mod.id} />
                 </CardContent>
               </Card>
             ))}
