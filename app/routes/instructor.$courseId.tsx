@@ -949,6 +949,13 @@ export default function InstructorCourseEditor({
             View Public Page
           </Button>
         </Link>
+
+        <Link to={`/instructor/${course.id}/students`}>
+          <Button variant="outline" size="sm">
+            <Users className="mr-1.5 size-4" />
+            Student Roster
+          </Button>
+        </Link>
       </div>
 
       {/* Course Content */}
