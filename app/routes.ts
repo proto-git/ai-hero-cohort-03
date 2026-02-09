@@ -1,4 +1,9 @@
-import { type RouteConfig, index, route, layout } from "@react-router/dev/routes";
+import {
+  type RouteConfig,
+  index,
+  route,
+  layout,
+} from "@react-router/dev/routes";
 
 export default [
   index("routes/home.tsx"),
@@ -8,17 +13,30 @@ export default [
     route("courses/:slug", "routes/courses.$slug.tsx"),
     route("courses/:slug/purchase", "routes/courses.$slug.purchase.tsx"),
     route("courses/:slug/welcome", "routes/courses.$slug.welcome.tsx"),
-    route("courses/:slug/lessons/:lessonId", "routes/courses.$slug.lessons.$lessonId.tsx"),
+    route(
+      "courses/:slug/lessons/:lessonId",
+      "routes/courses.$slug.lessons.$lessonId.tsx"
+    ),
     route("instructor", "routes/instructor.tsx"),
     route("instructor/new", "routes/instructor.new.tsx"),
     route("instructor/:courseId", "routes/instructor.$courseId.tsx"),
-    route("instructor/:courseId/lessons/:lessonId", "routes/instructor.$courseId.lessons.$lessonId.tsx"),
-    route("instructor/:courseId/lessons/:lessonId/quiz", "routes/instructor.$courseId.lessons.$lessonId.quiz.tsx"),
-    route("instructor/:courseId/students", "routes/instructor.$courseId.students.tsx"),
+    route(
+      "instructor/:courseId/lessons/:lessonId",
+      "routes/instructor.$courseId.lessons.$lessonId.tsx"
+    ),
+    route(
+      "instructor/:courseId/lessons/:lessonId/quiz",
+      "routes/instructor.$courseId.lessons.$lessonId.quiz.tsx"
+    ),
+    route(
+      "instructor/:courseId/students",
+      "routes/instructor.$courseId.students.tsx"
+    ),
     route("admin/users", "routes/admin.users.tsx"),
     route("admin/courses", "routes/admin.courses.tsx"),
     route("admin/categories", "routes/admin.categories.tsx"),
     route("settings", "routes/settings.tsx"),
+    route("redeem/:code", "routes/redeem.$code.tsx"),
   ]),
   route("signup", "routes/signup.tsx"),
   route("login", "routes/login.tsx"),
