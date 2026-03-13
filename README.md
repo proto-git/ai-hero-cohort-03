@@ -1,12 +1,13 @@
 <div align="center">
 <a href="https://www.aihero.dev/cohorts/ai-coding-for-real-engineers-with-claude-code-2026-04">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1773311733/cohorts/cohort-hx0zg/jachrxltvjjieitlrkx4.png" />
-    <source media="(prefers-color-scheme: light)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1773311733/cohorts/cohort-hx0zg/ka4tpihc3jbdxurqgzk7.png" />
-    <img src="https://res.cloudinary.com/total-typescript/image/upload/v1773311733/cohorts/cohort-hx0zg/ka4tpihc3jbdxurqgzk7.png" width="421" height="102" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1773381447/github-project-header-dark_2x.png" />
+    <source media="(prefers-color-scheme: light)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1773381447/github-project-header-light_2x.png" />
+    <img src="https://res.cloudinary.com/total-typescript/image/upload/v1773381447/github-project-header-light_2x.png" width="421" height="102" />
     </picture>
 </a>
 </div>
+<br/>
 
 > The exercise repo for [AI Coding for Real Engineers with Claude Code](https://www.aihero.dev/cohorts/ai-coding-for-real-engineers-with-claude-code-2026-04) — a 2-week learning cohort starting March 30, 2026.
 
