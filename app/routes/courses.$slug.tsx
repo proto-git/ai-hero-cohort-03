@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useFetcher, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/courses.$slug";
 import {
@@ -42,6 +42,11 @@ import { formatDuration, formatPrice } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice, getCountryTierInfo } from "~/lib/ppp";
+import {
+  getCourseAverageRating,
+  getReviewByUserAndCourse,
+} from "~/services/courseReviewService";
+import { StarRating } from "~/components/star-rating";
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course";
@@ -102,6 +107,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     : courseWithDetails.price;
   const tierInfo = getCountryTierInfo(country);
 
+  const { averageRating, totalReviews } = getCourseAverageRating(course.id);
+  const userReview = currentUserId
+    ? getReviewByUserAndCourse(currentUserId, course.id)
+    : null;
+
   return {
     course: courseWithDetails,
     salesCopyHtml,
@@ -113,6 +123,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    averageRating,
+    totalReviews,
+    userRating: userReview?.rating ?? null,
   };
 }
 
@@ -181,9 +194,26 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    averageRating,
+    totalReviews,
+    userRating,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
+  const [optimisticRating, setOptimisticRating] = useState(userRating);
+  const fetcher = useFetcher();
+
+  useEffect(() => {
+    setOptimisticRating(userRating);
+  }, [userRating]);
+
+  function handleRate(rating: number) {
+    setOptimisticRating(rating);
+    fetcher.submit(
+      { courseId: course.id, rating },
+      { method: "POST", action: "/api/course-reviews", encType: "application/json" }
+    );
+  }
 
   useEffect(() => {
     if (searchParams.get("already_enrolled") === "1") {
@@ -321,6 +351,12 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
             </span>
           )}
         </div>
+        <div className="mt-3">
+          <StarRating
+            rating={averageRating}
+            totalReviews={totalReviews}
+          />
+        </div>
       </div>
 
       {/* Two-column: sales copy left, sidebar right */}
@@ -442,6 +478,18 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
                   </p>
                 )}
               </div>
+              {enrolled && (
+                <div className="border-t pt-4">
+                  <p className="mb-2 text-sm font-medium">
+                    {optimisticRating ? "Your Rating" : "Rate this Course"}
+                  </p>
+                  <StarRating
+                    rating={optimisticRating ?? 0}
+                    interactive
+                    onRate={handleRate}
+                  />
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
