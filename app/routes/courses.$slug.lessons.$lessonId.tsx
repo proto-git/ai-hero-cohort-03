@@ -26,7 +26,9 @@ import {
   getBestAttempt,
 } from "~/services/quizService";
 import { computeResult } from "~/services/quizScoringService";
-import { LessonProgressStatus } from "~/db/schema";
+import { getCommentsForLesson, createComment } from "~/services/lessonCommentService";
+import { getUserById } from "~/services/userService";
+import { LessonProgressStatus, UserRole } from "~/db/schema";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import {
@@ -47,6 +49,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { cn, formatDuration } from "~/lib/utils";
+import { LessonComments } from "~/components/lesson-comments";
 import { renderMarkdown } from "~/lib/markdown.server";
 import { YouTubePlayer } from "~/components/youtube-player";
 import { data, isRouteErrorResponse } from "react-router";
@@ -248,6 +251,19 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
+  // Load comments + determine moderation permissions
+  let isInstructor = false;
+  let isAdmin = false;
+  if (currentUserId) {
+    isInstructor = course.instructorId === currentUserId;
+    const currentUser = getUserById(currentUserId);
+    isAdmin = currentUser?.role === UserRole.Admin;
+  }
+  const comments = getCommentsForLesson(
+    lessonId,
+    isInstructor || isAdmin
+  );
+
   return {
     course: {
       id: courseWithDetails.id,
@@ -281,6 +297,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    isInstructor,
+    isAdmin,
   };
 }
 
@@ -299,6 +318,23 @@ export async function action({ params, request }: Route.ActionArgs) {
 
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  if (intent === "create-comment") {
+    const user = getUserById(currentUserId);
+    const isInstructor = course.instructorId === currentUserId;
+    const isAdmin = user?.role === UserRole.Admin;
+    if (!isUserEnrolled(currentUserId, course.id) && !isInstructor && !isAdmin) {
+      throw data("You must be enrolled to comment", { status: 403 });
+    }
+    const content = String(formData.get("content") ?? "").trim();
+    if (content.length === 0 || content.length > 2000) {
+      throw data("Comment must be 1-2000 characters", { status: 400 });
+    }
+    const parentIdRaw = formData.get("parentId");
+    const parentId = parentIdRaw ? Number(parentIdRaw) : null;
+    createComment(lessonId, currentUserId, content, parentId);
+    return { success: true };
+  }
 
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
@@ -382,6 +418,9 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    isInstructor,
+    isAdmin,
   } = loaderData;
   const [autoplay, toggleAutoplay] = useAutoplay();
   const fetcher = useFetcher({ key: `mark-complete-${lesson.id}` });
@@ -543,6 +582,18 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
               quizResult={quizResult}
               quizFetcher={quizFetcher}
               isSubmitting={isSubmittingQuiz}
+            />
+          )}
+
+          {/* Discussion */}
+          {(enrolled || isInstructor || isAdmin) && currentUserId && (
+            <LessonComments
+              lessonId={lesson.id}
+              comments={comments}
+              currentUserId={currentUserId}
+              isInstructor={isInstructor}
+              isAdmin={isAdmin}
+              enrolled={enrolled}
             />
           )}
 

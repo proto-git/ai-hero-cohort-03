@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, unique } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, unique, index } from "drizzle-orm/sqlite-core";
 
 export enum UserRole {
   Student = "student",
@@ -21,6 +21,12 @@ export enum LessonProgressStatus {
 export enum QuestionType {
   MultipleChoice = "multiple_choice",
   TrueFalse = "true_false",
+}
+
+export enum CommentStatus {
+  Visible = "visible",
+  Hidden = "hidden",
+  Deleted = "deleted",
 }
 
 export enum TeamMemberRole {
@@ -258,6 +264,35 @@ export const courseReviews = sqliteTable(
       .$defaultFn(() => new Date().toISOString()),
   },
   (table) => [unique().on(table.userId, table.courseId)]
+);
+
+export const lessonComments = sqliteTable(
+  "lesson_comments",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    lessonId: integer("lesson_id")
+      .notNull()
+      .references(() => lessons.id),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    parentId: integer("parent_id"),
+    content: text("content").notNull(),
+    status: text("status").notNull().$type<CommentStatus>(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    updatedAt: text("updated_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index("idx_lesson_comments_lesson_status").on(
+      table.lessonId,
+      table.status,
+      table.createdAt
+    ),
+  ]
 );
 
 export const videoWatchEvents = sqliteTable("video_watch_events", {

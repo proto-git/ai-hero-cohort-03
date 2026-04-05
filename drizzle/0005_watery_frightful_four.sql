@@ -1,0 +1,1 @@
+ALTER TABLE `lesson_comments` ADD `parent_id` integer;
