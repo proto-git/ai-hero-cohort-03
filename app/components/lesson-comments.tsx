@@ -95,7 +95,7 @@ function CommentForm({
   const isSubmitting =
     navigation.state === "submitting" &&
     navigation.formData?.get("intent") === "create-comment" &&
-    navigation.formData?.get("parentId") === (parentId?.toString() ?? "");
+    (navigation.formData?.get("parentId") ?? "") === (parentId?.toString() ?? "");
 
   // Focus textarea on mount for reply forms
   useEffect(() => {

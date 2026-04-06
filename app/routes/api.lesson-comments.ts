@@ -1,5 +1,5 @@
 import { data } from "react-router";
-import { z } from "zod";
+import * as v from "valibot";
 import type { Route } from "./+types/api.lesson-comments";
 import { getCurrentUserId } from "~/lib/session";
 import { parseJsonBody } from "~/lib/validation";
@@ -15,9 +15,9 @@ import {
 } from "~/services/lessonCommentService";
 import { UserRole } from "~/db/schema";
 
-const moderateCommentSchema = z.object({
-  intent: z.enum(["hide", "unhide", "delete"]),
-  commentId: z.number(),
+const moderateCommentSchema = v.object({
+  intent: v.picklist(["hide", "unhide", "delete"]),
+  commentId: v.number(),
 });
 
 export async function action({ request }: Route.ActionArgs) {
