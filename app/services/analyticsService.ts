@@ -7,7 +7,11 @@ import {
   lessonProgress,
   LessonProgressStatus,
   purchases,
+  quizAnswers,
   quizAttempts,
+  quizOptions,
+  quizQuestions,
+  QuestionType,
   quizzes,
   lessons,
   modules,
@@ -650,6 +654,257 @@ export function getCourseVideoWatchThrough(
         averageWatchThrough: entry.sum / entry.count,
       };
     });
+}
+
+/** One option of a multiple-choice or true/false question, with selection count. */
+export type QuizPerformanceOption = {
+  optionId: number;
+  optionText: string;
+  isCorrect: boolean;
+  /** Number of `quizAnswers` rows that selected this option, across all attempts. */
+  selectedCount: number;
+};
+
+/** One question inside a quiz, with answer aggregates and option distribution. */
+export type QuizPerformanceQuestion = {
+  questionId: number;
+  questionText: string;
+  questionType: QuestionType;
+  position: number;
+  /** Total number of answer rows on this question, across all attempts. */
+  totalAnswers: number;
+  /** Number of those answers that selected an option marked `isCorrect`. */
+  correctAnswers: number;
+  /**
+   * Fraction in [0, 1]. 0 when `totalAnswers === 0` — UI should show an
+   * empty state, not "0%", since the two are very different stories.
+   */
+  correctRate: number;
+  /** Every option for the question, in stable id order. Unselected options appear with `selectedCount: 0`. */
+  options: QuizPerformanceOption[];
+};
+
+/** One quiz in the course, with pass-rate aggregates and a nested question list. */
+export type QuizPerformanceRow = {
+  quizId: number;
+  quizTitle: string;
+  /** The threshold the quiz was created with — informational, not used in pass-rate math. */
+  passingScore: number;
+  lessonId: number;
+  lessonTitle: string;
+  modulePosition: number;
+  lessonPosition: number;
+  /** Total `quizAttempts` rows on this quiz. */
+  totalAttempts: number;
+  /** Subset of `totalAttempts` where `passed = 1`. */
+  passedAttempts: number;
+  /**
+   * Fraction in [0, 1]. 0 when `totalAttempts === 0` — UI should show an
+   * empty state. Matches `getAverageQuizPassRate`'s per-attempt definition
+   * so the same student behavior tells the same story on the overview KPI
+   * and the per-course Quizzes tab.
+   */
+  passRate: number;
+  questions: QuizPerformanceQuestion[];
+};
+
+/**
+ * Per-quiz, per-question, per-option analytics for a single course.
+ *
+ * Definition lock-in (Phase 5):
+ *   - Pass rate = `passed_attempts / total_attempts` (per-attempt counting),
+ *     matching `getAverageQuizPassRate` so the overview KPI and the per-course
+ *     tab can never disagree on the same student's behavior.
+ *   - Per-question correct rate = `correct_answers / total_answers`, also
+ *     counted per `quizAnswers` row. A student who answered Q1 wrong then
+ *     right contributes 1 wrong + 1 right.
+ *   - Per-option distribution counts every selection of that option, across
+ *     every attempt — same basis as the rate above so the bars and the rate
+ *     label visually agree.
+ *
+ * Strategy (anchor-then-merge):
+ *   Six small queries — three "list" queries (quizzes, questions, options)
+ *   and three aggregate queries (attempts per quiz, answers per question,
+ *   selections per option) — stitched in JS by id maps. Quizzes/questions/
+ *   options with zero data still appear in the output, with zero counts and
+ *   `correctRate`/`passRate` of 0, matching the rest of the service's
+ *   "drive output from the anchor list" convention.
+ *
+ * Returns [] when the course has no quizzes (so the UI can show its
+ * "no quizzes yet" empty state).
+ */
+export function getCourseQuizPerformance(
+  opts: CourseScope
+): QuizPerformanceRow[] {
+  // 1. Anchor — every quiz in the course, ordered by module/lesson position.
+  const quizRows = db
+    .select({
+      quizId: quizzes.id,
+      quizTitle: quizzes.title,
+      passingScore: quizzes.passingScore,
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      lessonPosition: lessons.position,
+      modulePosition: modules.position,
+    })
+    .from(quizzes)
+    .innerJoin(lessons, eq(quizzes.lessonId, lessons.id))
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(modules.courseId, opts.courseId))
+    .orderBy(modules.position, lessons.position)
+    .all();
+
+  if (quizRows.length === 0) return [];
+
+  const quizIds = quizRows.map((q) => q.quizId);
+
+  // 2. Aggregate — attempts per quiz. Grouped on quizId so quizzes with zero
+  //    attempts simply don't appear here and fall through to defaults below.
+  const attemptRows = db
+    .select({
+      quizId: quizAttempts.quizId,
+      total: sql<number>`COUNT(*)`,
+      passed: sql<number>`COALESCE(SUM(CASE WHEN ${quizAttempts.passed} = 1 THEN 1 ELSE 0 END), 0)`,
+    })
+    .from(quizAttempts)
+    .where(inArray(quizAttempts.quizId, quizIds))
+    .groupBy(quizAttempts.quizId)
+    .all();
+
+  const attemptsByQuiz = new Map(attemptRows.map((r) => [r.quizId, r]));
+
+  // 3. Anchor — every question in those quizzes, ordered for stable display.
+  const questionRows = db
+    .select({
+      questionId: quizQuestions.id,
+      quizId: quizQuestions.quizId,
+      questionText: quizQuestions.questionText,
+      questionType: quizQuestions.questionType,
+      position: quizQuestions.position,
+    })
+    .from(quizQuestions)
+    .where(inArray(quizQuestions.quizId, quizIds))
+    .orderBy(quizQuestions.quizId, quizQuestions.position)
+    .all();
+
+  const questionIds = questionRows.map((q) => q.questionId);
+
+  // 4. Aggregate — per-question total + correct counts. We join `quizAnswers`
+  //    to `quizOptions` to read `isCorrect` for the selected option, which
+  //    is the only place "correctness" lives in the schema.
+  //
+  //    `inArray` throws on empty arrays, so we guard explicitly: a course can
+  //    have quizzes with no questions yet, in which case we just skip.
+  const answerRows =
+    questionIds.length > 0
+      ? db
+          .select({
+            questionId: quizAnswers.questionId,
+            total: sql<number>`COUNT(*)`,
+            correct: sql<number>`COALESCE(SUM(CASE WHEN ${quizOptions.isCorrect} = 1 THEN 1 ELSE 0 END), 0)`,
+          })
+          .from(quizAnswers)
+          .innerJoin(
+            quizOptions,
+            eq(quizAnswers.selectedOptionId, quizOptions.id)
+          )
+          .where(inArray(quizAnswers.questionId, questionIds))
+          .groupBy(quizAnswers.questionId)
+          .all()
+      : [];
+
+  const answersByQuestion = new Map(answerRows.map((r) => [r.questionId, r]));
+
+  // 5. Anchor — every option for those questions. Driven from quizOptions so
+  //    options that nobody picked still appear in the distribution with 0.
+  const optionRows =
+    questionIds.length > 0
+      ? db
+          .select({
+            optionId: quizOptions.id,
+            questionId: quizOptions.questionId,
+            optionText: quizOptions.optionText,
+            isCorrect: quizOptions.isCorrect,
+          })
+          .from(quizOptions)
+          .where(inArray(quizOptions.questionId, questionIds))
+          .orderBy(quizOptions.id)
+          .all()
+      : [];
+
+  const optionIds = optionRows.map((o) => o.optionId);
+
+  // 6. Aggregate — selections per option. Same empty-array guard.
+  const optionCountRows =
+    optionIds.length > 0
+      ? db
+          .select({
+            optionId: quizAnswers.selectedOptionId,
+            count: sql<number>`COUNT(*)`,
+          })
+          .from(quizAnswers)
+          .where(inArray(quizAnswers.selectedOptionId, optionIds))
+          .groupBy(quizAnswers.selectedOptionId)
+          .all()
+      : [];
+
+  const countByOption = new Map(
+    optionCountRows.map((r) => [r.optionId, r.count])
+  );
+
+  // Group options under their question, preserving the anchor's id order.
+  const optionsByQuestion = new Map<number, QuizPerformanceOption[]>();
+  for (const opt of optionRows) {
+    const list = optionsByQuestion.get(opt.questionId) ?? [];
+    list.push({
+      optionId: opt.optionId,
+      optionText: opt.optionText,
+      isCorrect: opt.isCorrect,
+      selectedCount: countByOption.get(opt.optionId) ?? 0,
+    });
+    optionsByQuestion.set(opt.questionId, list);
+  }
+
+  // Group questions under their quiz, preserving the anchor's position order.
+  const questionsByQuiz = new Map<number, QuizPerformanceQuestion[]>();
+  for (const q of questionRows) {
+    const agg = answersByQuestion.get(q.questionId);
+    const totalAnswers = agg?.total ?? 0;
+    const correctAnswers = agg?.correct ?? 0;
+    const list = questionsByQuiz.get(q.quizId) ?? [];
+    list.push({
+      questionId: q.questionId,
+      questionText: q.questionText,
+      questionType: q.questionType,
+      position: q.position,
+      totalAnswers,
+      correctAnswers,
+      correctRate: totalAnswers > 0 ? correctAnswers / totalAnswers : 0,
+      options: optionsByQuestion.get(q.questionId) ?? [],
+    });
+    questionsByQuiz.set(q.quizId, list);
+  }
+
+  // Final stitch: drive output from the quiz anchor list so quizzes with
+  // zero attempts and/or zero questions still appear with empty state.
+  return quizRows.map((quiz) => {
+    const attempts = attemptsByQuiz.get(quiz.quizId);
+    const totalAttempts = attempts?.total ?? 0;
+    const passedAttempts = attempts?.passed ?? 0;
+    return {
+      quizId: quiz.quizId,
+      quizTitle: quiz.quizTitle,
+      passingScore: quiz.passingScore,
+      lessonId: quiz.lessonId,
+      lessonTitle: quiz.lessonTitle,
+      modulePosition: quiz.modulePosition,
+      lessonPosition: quiz.lessonPosition,
+      totalAttempts,
+      passedAttempts,
+      passRate: totalAttempts > 0 ? passedAttempts / totalAttempts : 0,
+      questions: questionsByQuiz.get(quiz.quizId) ?? [],
+    };
+  });
 }
 
 /**

@@ -18,6 +18,7 @@ import {
   getAverageQuizPassRate,
   getAverageRating,
   getCourseDropOff,
+  getCourseQuizPerformance,
   getCourseVideoWatchThrough,
   getTotalEnrollments,
   getTotalRevenue,
@@ -33,6 +34,7 @@ import { Card, CardContent } from "~/components/ui/card";
 import { KpiCard } from "~/components/analytics/kpi-card";
 import { DropOffChart } from "~/components/analytics/drop-off-chart";
 import { WatchThroughList } from "~/components/analytics/watch-through-list";
+import { QuizzesPanel } from "~/components/analytics/quizzes-panel";
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course Analytics";
@@ -101,6 +103,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const averageRating = getAverageRating(scope);
   const dropOff = getCourseDropOff(scope);
   const watchThrough = getCourseVideoWatchThrough(scope);
+  const quizPerformance = getCourseQuizPerformance(scope);
 
   return {
     course,
@@ -112,6 +115,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     averageRating,
     dropOff,
     watchThrough,
+    quizPerformance,
   };
 }
 
@@ -161,6 +165,7 @@ export default function InstructorCourseAnalytics({
     averageRating,
     dropOff,
     watchThrough,
+    quizPerformance,
   } = loaderData;
 
   return (
@@ -239,7 +244,11 @@ export default function InstructorCourseAnalytics({
         </TabsContent>
 
         <TabsContent value="quizzes">
-          <ComingSoonPanel label="Quiz" />
+          <QuizzesPanel
+            title="Quiz performance"
+            description="Per-quiz pass rates with drill-down to question correct rates and option distributions. Click a quiz to expand."
+            quizzes={quizPerformance}
+          />
         </TabsContent>
 
         <TabsContent value="revenue">

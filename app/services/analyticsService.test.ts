@@ -22,6 +22,7 @@ import {
   getPerCourseSummary,
   getCourseDropOff,
   getCourseVideoWatchThrough,
+  getCourseQuizPerformance,
 } from "./analyticsService";
 
 function createSecondInstructor(db: typeof testDb) {
@@ -167,6 +168,45 @@ function recordAttempt(
     })
     .returning()
     .get();
+}
+
+function createQuestion(
+  db: typeof testDb,
+  opts: {
+    quizId: number;
+    questionText: string;
+    position: number;
+    questionType?: schema.QuestionType;
+  }
+) {
+  return db
+    .insert(schema.quizQuestions)
+    .values({
+      quizId: opts.quizId,
+      questionText: opts.questionText,
+      position: opts.position,
+      questionType: opts.questionType ?? schema.QuestionType.MultipleChoice,
+    })
+    .returning()
+    .get();
+}
+
+function createOption(
+  db: typeof testDb,
+  opts: { questionId: number; optionText: string; isCorrect: boolean }
+) {
+  return db.insert(schema.quizOptions).values(opts).returning().get();
+}
+
+function recordAnswer(
+  db: typeof testDb,
+  opts: {
+    attemptId: number;
+    questionId: number;
+    selectedOptionId: number;
+  }
+) {
+  return db.insert(schema.quizAnswers).values(opts).returning().get();
 }
 
 function createModule(
@@ -1469,6 +1509,248 @@ describe("analyticsService", () => {
 
       const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
       expect(rows.map((r) => r.lessonTitle)).toEqual(["A1", "A2", "B1", "B2"]);
+    });
+  });
+
+  describe("getCourseQuizPerformance", () => {
+    it("returns an empty array when the course has no quizzes", () => {
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+      expect(rows).toEqual([]);
+    });
+
+    it("returns a quiz with zero attempts and empty questions when no data exists", () => {
+      // The base course has no questions, just a quiz shell. This is the
+      // 'just-launched course' state — the row must still appear so the UI
+      // can render its empty-state message instead of looking broken.
+      createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Empty Quiz",
+      });
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].quizTitle).toBe("Empty Quiz");
+      expect(rows[0].totalAttempts).toBe(0);
+      expect(rows[0].passedAttempts).toBe(0);
+      expect(rows[0].passRate).toBe(0);
+      expect(rows[0].questions).toEqual([]);
+    });
+
+    it("computes passRate as passed_attempts / total_attempts (per-attempt)", () => {
+      const quiz = createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Quiz",
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+
+      // 4 attempts total, 1 passed → 0.25.
+      // Notably: s1 has 3 fails + 1 pass (so under "first attempt only" they
+      // would count as a fail). The all-attempts definition we locked in
+      // produces 1/4 = 0.25 here.
+      recordAttempt(testDb, { userId: s1.id, quizId: quiz.id, passed: false, score: 0.2 });
+      recordAttempt(testDb, { userId: s1.id, quizId: quiz.id, passed: false, score: 0.4 });
+      recordAttempt(testDb, { userId: s1.id, quizId: quiz.id, passed: true, score: 0.9 });
+      recordAttempt(testDb, { userId: s2.id, quizId: quiz.id, passed: false, score: 0.3 });
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].totalAttempts).toBe(4);
+      expect(rows[0].passedAttempts).toBe(1);
+      expect(rows[0].passRate).toBeCloseTo(0.25, 5);
+    });
+
+    it("computes per-question correctRate by joining answers to options", () => {
+      const quiz = createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Quiz",
+      });
+      const question = createQuestion(testDb, {
+        quizId: quiz.id,
+        questionText: "What is 2 + 2?",
+        position: 1,
+      });
+      const correctOption = createOption(testDb, {
+        questionId: question.id,
+        optionText: "4",
+        isCorrect: true,
+      });
+      const wrongOption = createOption(testDb, {
+        questionId: question.id,
+        optionText: "5",
+        isCorrect: false,
+      });
+      const student = createStudent(testDb, "s@example.com");
+
+      // 4 answers: 3 correct, 1 wrong → 0.75.
+      const a1 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
+      const a2 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
+      const a3 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
+      const a4 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: false, score: 0 });
+      recordAnswer(testDb, { attemptId: a1.id, questionId: question.id, selectedOptionId: correctOption.id });
+      recordAnswer(testDb, { attemptId: a2.id, questionId: question.id, selectedOptionId: correctOption.id });
+      recordAnswer(testDb, { attemptId: a3.id, questionId: question.id, selectedOptionId: correctOption.id });
+      recordAnswer(testDb, { attemptId: a4.id, questionId: question.id, selectedOptionId: wrongOption.id });
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+      const q = rows[0].questions[0];
+
+      expect(q.totalAnswers).toBe(4);
+      expect(q.correctAnswers).toBe(3);
+      expect(q.correctRate).toBeCloseTo(0.75, 5);
+    });
+
+    it("returns option distributions where unselected options appear with 0", () => {
+      const quiz = createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Quiz",
+      });
+      const question = createQuestion(testDb, {
+        quizId: quiz.id,
+        questionText: "Pick an option",
+        position: 1,
+      });
+      const optA = createOption(testDb, { questionId: question.id, optionText: "A", isCorrect: true });
+      const optB = createOption(testDb, { questionId: question.id, optionText: "B", isCorrect: false });
+      const optC = createOption(testDb, { questionId: question.id, optionText: "C", isCorrect: false });
+      const student = createStudent(testDb, "s@example.com");
+
+      // 3 answers: 2 picked A, 1 picked B, nobody picked C.
+      const att1 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
+      const att2 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
+      const att3 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: false, score: 0 });
+      recordAnswer(testDb, { attemptId: att1.id, questionId: question.id, selectedOptionId: optA.id });
+      recordAnswer(testDb, { attemptId: att2.id, questionId: question.id, selectedOptionId: optA.id });
+      recordAnswer(testDb, { attemptId: att3.id, questionId: question.id, selectedOptionId: optB.id });
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+      const options = rows[0].questions[0].options;
+
+      // All three options must appear, and their counts must sum to total answers.
+      expect(options).toHaveLength(3);
+      const byId = new Map(options.map((o) => [o.optionId, o]));
+      expect(byId.get(optA.id)?.selectedCount).toBe(2);
+      expect(byId.get(optB.id)?.selectedCount).toBe(1);
+      expect(byId.get(optC.id)?.selectedCount).toBe(0);
+
+      const totalSelections = options.reduce((sum, o) => sum + o.selectedCount, 0);
+      expect(totalSelections).toBe(rows[0].questions[0].totalAnswers);
+    });
+
+    it("renders correctly when every student picked the same option", () => {
+      const quiz = createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Quiz",
+      });
+      const question = createQuestion(testDb, {
+        quizId: quiz.id,
+        questionText: "Pick A",
+        position: 1,
+      });
+      const optA = createOption(testDb, { questionId: question.id, optionText: "A", isCorrect: true });
+      const optB = createOption(testDb, { questionId: question.id, optionText: "B", isCorrect: false });
+      const student = createStudent(testDb, "s@example.com");
+
+      const att = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
+      recordAnswer(testDb, { attemptId: att.id, questionId: question.id, selectedOptionId: optA.id });
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+      const options = rows[0].questions[0].options;
+
+      expect(rows[0].questions[0].correctRate).toBe(1);
+      expect(options.find((o) => o.optionId === optA.id)?.selectedCount).toBe(1);
+      // The other option must still appear, just with 0 — UI shouldn't have
+      // to special-case "no bar at all".
+      expect(options.find((o) => o.optionId === optB.id)?.selectedCount).toBe(0);
+    });
+
+    it("returns a question with zero answers as an empty distribution, not NaN", () => {
+      const quiz = createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Quiz",
+      });
+      const question = createQuestion(testDb, {
+        quizId: quiz.id,
+        questionText: "Untouched",
+        position: 1,
+      });
+      createOption(testDb, { questionId: question.id, optionText: "A", isCorrect: true });
+      createOption(testDb, { questionId: question.id, optionText: "B", isCorrect: false });
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+      const q = rows[0].questions[0];
+
+      expect(q.totalAnswers).toBe(0);
+      expect(q.correctAnswers).toBe(0);
+      expect(q.correctRate).toBe(0);
+      expect(Number.isNaN(q.correctRate)).toBe(false);
+      // Both options still appear so the bar chart can render an empty state
+      // with the right shape.
+      expect(q.options).toHaveLength(2);
+      expect(q.options.every((o) => o.selectedCount === 0)).toBe(true);
+    });
+
+    it("scopes results to a single course (excludes other courses' quizzes)", () => {
+      const otherCourse = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Other",
+        slug: "other",
+      });
+      const myQuiz = createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Mine",
+      });
+      const otherQuiz = createQuizForCourse(testDb, {
+        courseId: otherCourse.id,
+        title: "Theirs",
+      });
+      const student = createStudent(testDb, "s@example.com");
+      // Heavy data on the OTHER quiz must not leak into our course's results.
+      recordAttempt(testDb, { userId: student.id, quizId: otherQuiz.id, passed: false, score: 0 });
+      recordAttempt(testDb, { userId: student.id, quizId: otherQuiz.id, passed: false, score: 0 });
+      recordAttempt(testDb, { userId: student.id, quizId: myQuiz.id, passed: true, score: 1 });
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0].quizId).toBe(myQuiz.id);
+      expect(rows[0].totalAttempts).toBe(1);
+      expect(rows[0].passRate).toBe(1);
+    });
+
+    it("orders quizzes by module position then lesson position", () => {
+      // Build two modules with one lesson each, in deliberate position order.
+      const moduleA = createModule(testDb, {
+        courseId: base.course.id,
+        title: "Module A",
+        position: 1,
+      });
+      const moduleB = createModule(testDb, {
+        courseId: base.course.id,
+        title: "Module B",
+        position: 2,
+      });
+      const lessonA = createLesson(testDb, {
+        moduleId: moduleA.id,
+        title: "A1",
+        position: 1,
+      });
+      const lessonB = createLesson(testDb, {
+        moduleId: moduleB.id,
+        title: "B1",
+        position: 1,
+      });
+
+      // Insert quizzes in REVERSE order to make sure ordering doesn't depend on insert order.
+      testDb.insert(schema.quizzes).values({ lessonId: lessonB.id, title: "Quiz B", passingScore: 0.7 }).run();
+      testDb.insert(schema.quizzes).values({ lessonId: lessonA.id, title: "Quiz A", passingScore: 0.7 }).run();
+
+      const rows = getCourseQuizPerformance({ courseId: base.course.id });
+
+      expect(rows.map((r) => r.quizTitle)).toEqual(["Quiz A", "Quiz B"]);
     });
   });
 });
