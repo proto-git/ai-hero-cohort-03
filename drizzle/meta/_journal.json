@@ -43,6 +43,13 @@
       "when": 1775338188476,
       "tag": "0005_watery_frightful_four",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1775352034602,
+      "tag": "0006_cynical_wild_child",
+      "breakpoints": true
     }
   ]
 }
