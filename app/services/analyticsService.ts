@@ -1,14 +1,17 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "~/db";
 import {
   courses,
   courseReviews,
   enrollments,
+  lessonProgress,
+  LessonProgressStatus,
   purchases,
   quizAttempts,
   quizzes,
   lessons,
   modules,
+  videoWatchEvents,
 } from "~/db/schema";
 
 /**
@@ -25,6 +28,12 @@ export type DateRange = {
 
 type AnalyticsScope = {
   instructorId?: number;
+  /**
+   * Restrict the query to a single course. Combines with `instructorId` —
+   * passing both is fine and is how the per-course route enforces ownership
+   * at the query layer (not just the loader).
+   */
+  courseId?: number;
   dateRange?: DateRange;
 };
 
@@ -33,6 +42,28 @@ export type TimeSeriesPoint = {
   bucket: string;
   value: number;
 };
+
+/**
+ * Build the WHERE predicate for any query that joins through `courses`.
+ *
+ * Returns `undefined` when nothing in the scope filters by course identity,
+ * which lets callers skip `.where()` entirely instead of passing a vacuous
+ * `1=1` clause. Both `instructorId` and `courseId` can be combined; the
+ * per-course routes pass both so query-level scoping is the second line of
+ * defense behind the loader's ownership check.
+ */
+function buildCourseScopePredicate(opts: AnalyticsScope) {
+  const conditions = [];
+  if (opts.instructorId !== undefined) {
+    conditions.push(eq(courses.instructorId, opts.instructorId));
+  }
+  if (opts.courseId !== undefined) {
+    conditions.push(eq(courses.id, opts.courseId));
+  }
+  if (conditions.length === 0) return undefined;
+  if (conditions.length === 1) return conditions[0];
+  return and(...conditions);
+}
 
 /**
  * Total revenue across courses, in cents.
@@ -52,10 +83,8 @@ export function getTotalRevenue(opts: AnalyticsScope = {}): number {
     .from(purchases)
     .innerJoin(courses, eq(purchases.courseId, courses.id));
 
-  const row =
-    opts.instructorId !== undefined
-      ? query.where(eq(courses.instructorId, opts.instructorId)).get()
-      : query.get();
+  const where = buildCourseScopePredicate(opts);
+  const row = where ? query.where(where).get() : query.get();
 
   return row?.total ?? 0;
 }
@@ -77,10 +106,8 @@ export function getTotalEnrollments(opts: AnalyticsScope = {}): number {
     .from(enrollments)
     .innerJoin(courses, eq(enrollments.courseId, courses.id));
 
-  const row =
-    opts.instructorId !== undefined
-      ? query.where(eq(courses.instructorId, opts.instructorId)).get()
-      : query.get();
+  const where = buildCourseScopePredicate(opts);
+  const row = where ? query.where(where).get() : query.get();
 
   return row?.total ?? 0;
 }
@@ -113,10 +140,8 @@ export function getAverageCompletionRate(opts: AnalyticsScope = {}): number {
     .innerJoin(courses, eq(enrollments.courseId, courses.id))
     .groupBy(enrollments.courseId);
 
-  const rows =
-    opts.instructorId !== undefined
-      ? query.where(eq(courses.instructorId, opts.instructorId)).all()
-      : query.all();
+  const where = buildCourseScopePredicate(opts);
+  const rows = where ? query.where(where).all() : query.all();
 
   if (rows.length === 0) return 0;
 
@@ -150,10 +175,8 @@ export function getAverageQuizPassRate(opts: AnalyticsScope = {}): number {
     .innerJoin(modules, eq(lessons.moduleId, modules.id))
     .innerJoin(courses, eq(modules.courseId, courses.id));
 
-  const row =
-    opts.instructorId !== undefined
-      ? query.where(eq(courses.instructorId, opts.instructorId)).get()
-      : query.get();
+  const where = buildCourseScopePredicate(opts);
+  const row = where ? query.where(where).get() : query.get();
 
   if (!row || row.total === 0) return 0;
   return row.passed / row.total;
@@ -178,10 +201,8 @@ export function getAverageRating(opts: AnalyticsScope = {}): number {
     .from(courseReviews)
     .innerJoin(courses, eq(courseReviews.courseId, courses.id));
 
-  const row =
-    opts.instructorId !== undefined
-      ? query.where(eq(courses.instructorId, opts.instructorId)).get()
-      : query.get();
+  const where = buildCourseScopePredicate(opts);
+  const row = where ? query.where(where).get() : query.get();
 
   if (!row || row.reviewCount === 0) return 0;
   return row.avgRating ?? 0;
@@ -409,6 +430,226 @@ export function getPerCourseSummary(
       revenueCents: revenueByCourse.get(row.courseId) ?? 0,
     };
   });
+}
+
+/** One row of the per-course drop-off funnel, in module/lesson order. */
+export type DropOffLessonRow = {
+  moduleId: number;
+  moduleTitle: string;
+  modulePosition: number;
+  lessonId: number;
+  lessonTitle: string;
+  lessonPosition: number;
+  /**
+   * Number of distinct students who reached this lesson, defined as
+   * "completed this lesson OR any later lesson in the course". A student
+   * who skips ahead to lesson 5 counts as having reached lessons 1–5.
+   */
+  reachedCount: number;
+};
+
+type CourseScope = {
+  courseId: number;
+  dateRange?: DateRange;
+};
+
+/**
+ * Per-lesson drop-off funnel for a single course, ordered by module then
+ * lesson position. Each row's `reachedCount` is the number of distinct
+ * students who completed that lesson or any later one.
+ *
+ * Definition lock-in (chosen for Phase 4):
+ *   "Reached lesson N" = the student has a `lessonProgress` row with
+ *   status = "completed" for lesson N or any lesson after it. This treats
+ *   skip-ahead behavior as having reached the earlier lessons, which gives
+ *   a monotonically non-increasing funnel.
+ *
+ * Implementation note:
+ *   Rather than running one COUNT(DISTINCT ...) query per lesson (N+1), we
+ *   pull every relevant progress row in one query and compute the funnel
+ *   in JS. For each user we find their highest reached lesson index, then
+ *   build a suffix-sum histogram across lesson positions. This is O(users +
+ *   lessons) regardless of how many lessons the course has.
+ *
+ * Returns [] when the course has no lessons (so the chart can show its
+ * empty state).
+ */
+export function getCourseDropOff(opts: CourseScope): DropOffLessonRow[] {
+  const courseLessons = db
+    .select({
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      lessonPosition: lessons.position,
+      moduleId: modules.id,
+      moduleTitle: modules.title,
+      modulePosition: modules.position,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(modules.courseId, opts.courseId))
+    .orderBy(modules.position, lessons.position)
+    .all();
+
+  if (courseLessons.length === 0) return [];
+
+  const lessonIdToIndex = new Map<number, number>();
+  courseLessons.forEach((row, index) => lessonIdToIndex.set(row.lessonId, index));
+
+  const lessonIds = courseLessons.map((row) => row.lessonId);
+
+  // Pull every "completed" progress row for the course's lessons in one shot.
+  // Filtering to status="completed" matches the locked definition above —
+  // started-but-not-finished progress doesn't count as having reached a lesson.
+  const progressRows = db
+    .select({
+      userId: lessonProgress.userId,
+      lessonId: lessonProgress.lessonId,
+    })
+    .from(lessonProgress)
+    .where(
+      and(
+        inArray(lessonProgress.lessonId, lessonIds),
+        eq(lessonProgress.status, LessonProgressStatus.Completed)
+      )
+    )
+    .all();
+
+  // For each user, the highest lesson index they completed.
+  const userMaxIndex = new Map<number, number>();
+  for (const row of progressRows) {
+    const index = lessonIdToIndex.get(row.lessonId);
+    if (index === undefined) continue;
+    const current = userMaxIndex.get(row.userId);
+    if (current === undefined || index > current) {
+      userMaxIndex.set(row.userId, index);
+    }
+  }
+
+  // Histogram of "users whose highest completed lesson is index i", then
+  // a suffix-sum from the end so each lesson reports "users with max >= i".
+  const histogram = new Array<number>(courseLessons.length).fill(0);
+  for (const maxIndex of userMaxIndex.values()) {
+    histogram[maxIndex] += 1;
+  }
+  const reachedCounts = new Array<number>(courseLessons.length);
+  let runningSum = 0;
+  for (let i = courseLessons.length - 1; i >= 0; i--) {
+    runningSum += histogram[i];
+    reachedCounts[i] = runningSum;
+  }
+
+  return courseLessons.map((row, index) => ({
+    moduleId: row.moduleId,
+    moduleTitle: row.moduleTitle,
+    modulePosition: row.modulePosition,
+    lessonId: row.lessonId,
+    lessonTitle: row.lessonTitle,
+    lessonPosition: row.lessonPosition,
+    reachedCount: reachedCounts[index],
+  }));
+}
+
+/** One row of the per-course video watch-through chart. */
+export type LessonWatchThroughRow = {
+  moduleId: number;
+  moduleTitle: string;
+  modulePosition: number;
+  lessonId: number;
+  lessonTitle: string;
+  lessonPosition: number;
+  /** Average watch-through fraction in [0, 1] across students who watched. */
+  averageWatchThrough: number;
+};
+
+/**
+ * Per-lesson average video watch-through for a single course.
+ *
+ * Per-user-per-lesson watch-through is defined as:
+ *   `MAX(videoWatchEvents.positionSeconds) / (lessons.durationMinutes * 60)`,
+ * clamped to [0, 1]. The lesson average is the mean of those per-user values.
+ *
+ * Lessons without a `durationMinutes` are excluded entirely (no honest
+ * denominator). Lessons that have a duration but zero watch events are also
+ * excluded — the chart hides them rather than reporting them as 0%, which
+ * would conflate "video isn't being watched" with "no video uploaded".
+ *
+ * Returns [] when there's nothing to chart.
+ */
+export function getCourseVideoWatchThrough(
+  opts: CourseScope
+): LessonWatchThroughRow[] {
+  const courseLessons = db
+    .select({
+      lessonId: lessons.id,
+      lessonTitle: lessons.title,
+      lessonPosition: lessons.position,
+      durationMinutes: lessons.durationMinutes,
+      moduleId: modules.id,
+      moduleTitle: modules.title,
+      modulePosition: modules.position,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(modules.courseId, opts.courseId))
+    .orderBy(modules.position, lessons.position)
+    .all();
+
+  // Drop lessons without a duration up front — they have no honest denominator.
+  type MeasurableLesson = (typeof courseLessons)[number] & {
+    durationMinutes: number;
+  };
+  const measurableLessons = courseLessons.filter(
+    (lesson): lesson is MeasurableLesson => lesson.durationMinutes !== null
+  );
+  if (measurableLessons.length === 0) return [];
+
+  const lessonIds = measurableLessons.map((lesson) => lesson.lessonId);
+
+  // Per (user, lesson) max watch position, in one query.
+  const maxRows = db
+    .select({
+      userId: videoWatchEvents.userId,
+      lessonId: videoWatchEvents.lessonId,
+      maxPosition: sql<number>`MAX(${videoWatchEvents.positionSeconds})`,
+    })
+    .from(videoWatchEvents)
+    .where(inArray(videoWatchEvents.lessonId, lessonIds))
+    .groupBy(videoWatchEvents.userId, videoWatchEvents.lessonId)
+    .all();
+
+  const lessonDurationById = new Map(
+    measurableLessons.map((lesson) => [lesson.lessonId, lesson.durationMinutes])
+  );
+
+  // Sum the per-user clamped ratios for each lesson, plus a count for the mean.
+  const aggregates = new Map<number, { sum: number; count: number }>();
+  for (const row of maxRows) {
+    const durationMinutes = lessonDurationById.get(row.lessonId);
+    if (durationMinutes === undefined || durationMinutes <= 0) continue;
+    const totalSeconds = durationMinutes * 60;
+    const rawRatio = row.maxPosition / totalSeconds;
+    const ratio = Math.min(1, Math.max(0, rawRatio));
+    const entry = aggregates.get(row.lessonId) ?? { sum: 0, count: 0 };
+    entry.sum += ratio;
+    entry.count += 1;
+    aggregates.set(row.lessonId, entry);
+  }
+
+  // Hide lessons with no events at all (Phase 4 product decision).
+  return measurableLessons
+    .filter((lesson) => aggregates.has(lesson.lessonId))
+    .map((lesson) => {
+      const entry = aggregates.get(lesson.lessonId)!;
+      return {
+        moduleId: lesson.moduleId,
+        moduleTitle: lesson.moduleTitle,
+        modulePosition: lesson.modulePosition,
+        lessonId: lesson.lessonId,
+        lessonTitle: lesson.lessonTitle,
+        lessonPosition: lesson.lessonPosition,
+        averageWatchThrough: entry.sum / entry.count,
+      };
+    });
 }
 
 /**

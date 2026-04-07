@@ -20,6 +20,8 @@ import {
   getRevenueTimeSeries,
   getEnrollmentTimeSeries,
   getPerCourseSummary,
+  getCourseDropOff,
+  getCourseVideoWatchThrough,
 } from "./analyticsService";
 
 function createSecondInstructor(db: typeof testDb) {
@@ -165,6 +167,121 @@ function recordAttempt(
     })
     .returning()
     .get();
+}
+
+function createModule(
+  db: typeof testDb,
+  opts: { courseId: number; title: string; position: number }
+) {
+  return db.insert(schema.modules).values(opts).returning().get();
+}
+
+function createLesson(
+  db: typeof testDb,
+  opts: {
+    moduleId: number;
+    title: string;
+    position: number;
+    durationMinutes?: number | null;
+  }
+) {
+  return db
+    .insert(schema.lessons)
+    .values({
+      moduleId: opts.moduleId,
+      title: opts.title,
+      position: opts.position,
+      durationMinutes: opts.durationMinutes ?? null,
+    })
+    .returning()
+    .get();
+}
+
+function recordLessonProgress(
+  db: typeof testDb,
+  opts: {
+    userId: number;
+    lessonId: number;
+    status: schema.LessonProgressStatus;
+  }
+) {
+  return db
+    .insert(schema.lessonProgress)
+    .values({
+      userId: opts.userId,
+      lessonId: opts.lessonId,
+      status: opts.status,
+      completedAt:
+        opts.status === schema.LessonProgressStatus.Completed
+          ? new Date().toISOString()
+          : null,
+    })
+    .returning()
+    .get();
+}
+
+function recordWatchEvent(
+  db: typeof testDb,
+  opts: { userId: number; lessonId: number; positionSeconds: number }
+) {
+  return db
+    .insert(schema.videoWatchEvents)
+    .values({
+      userId: opts.userId,
+      lessonId: opts.lessonId,
+      eventType: "progress",
+      positionSeconds: opts.positionSeconds,
+    })
+    .returning()
+    .get();
+}
+
+/**
+ * Build a course with two modules and four lessons (2 per module) in
+ * deterministic order. Lessons receive a `durationMinutes` so the watch-through
+ * tests have an honest denominator; individual tests override duration where
+ * the absence of a duration is the thing under test.
+ */
+function seedCourseWithLessons(
+  db: typeof testDb,
+  opts: { courseId: number; durationMinutes?: number | null }
+) {
+  const moduleA = createModule(db, {
+    courseId: opts.courseId,
+    title: "Module A",
+    position: 1,
+  });
+  const moduleB = createModule(db, {
+    courseId: opts.courseId,
+    title: "Module B",
+    position: 2,
+  });
+  const duration = opts.durationMinutes === undefined ? 10 : opts.durationMinutes;
+  const lessonA1 = createLesson(db, {
+    moduleId: moduleA.id,
+    title: "A1",
+    position: 1,
+    durationMinutes: duration,
+  });
+  const lessonA2 = createLesson(db, {
+    moduleId: moduleA.id,
+    title: "A2",
+    position: 2,
+    durationMinutes: duration,
+  });
+  const lessonB1 = createLesson(db, {
+    moduleId: moduleB.id,
+    title: "B1",
+    position: 1,
+    durationMinutes: duration,
+  });
+  const lessonB2 = createLesson(db, {
+    moduleId: moduleB.id,
+    title: "B2",
+    position: 2,
+    durationMinutes: duration,
+  });
+  return { moduleA, moduleB, lessonA1, lessonA2, lessonB1, lessonB2 };
 }
 
 describe("analyticsService", () => {
@@ -906,6 +1023,452 @@ describe("analyticsService", () => {
         { bucket: "2026-02", value: 0 },
         { bucket: "2026-03", value: 1 },
       ]);
+    });
+  });
+
+  describe("courseId scoping on KPI functions", () => {
+    it("getTotalRevenue restricts to a single course when courseId is passed", () => {
+      const courseB = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Second",
+        slug: "second",
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      recordPurchase(testDb, {
+        userId: s1.id,
+        courseId: base.course.id,
+        pricePaid: 1000,
+      });
+      recordPurchase(testDb, {
+        userId: s1.id,
+        courseId: courseB.id,
+        pricePaid: 9999,
+      });
+
+      expect(getTotalRevenue({ courseId: base.course.id })).toBe(1000);
+      expect(getTotalRevenue({ courseId: courseB.id })).toBe(9999);
+    });
+
+    it("getTotalEnrollments restricts to a single course when courseId is passed", () => {
+      const courseB = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Second",
+        slug: "second",
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+
+      recordEnrollment(testDb, { userId: s1.id, courseId: base.course.id });
+      recordEnrollment(testDb, { userId: s2.id, courseId: base.course.id });
+      recordEnrollment(testDb, { userId: s1.id, courseId: courseB.id });
+
+      expect(getTotalEnrollments({ courseId: base.course.id })).toBe(2);
+      expect(getTotalEnrollments({ courseId: courseB.id })).toBe(1);
+    });
+
+    it("getAverageCompletionRate scopes to a single course", () => {
+      const courseB = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Second",
+        slug: "second",
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+
+      // base.course: 2 enrollments, 1 completed → 50%
+      recordEnrollment(testDb, {
+        userId: s1.id,
+        courseId: base.course.id,
+        completedAt: "2026-01-01T00:00:00Z",
+      });
+      recordEnrollment(testDb, { userId: s2.id, courseId: base.course.id });
+      // courseB: 1 enrollment, 1 completed → 100%
+      recordEnrollment(testDb, {
+        userId: s1.id,
+        courseId: courseB.id,
+        completedAt: "2026-01-01T00:00:00Z",
+      });
+
+      expect(getAverageCompletionRate({ courseId: base.course.id })).toBeCloseTo(
+        0.5,
+        5
+      );
+      expect(getAverageCompletionRate({ courseId: courseB.id })).toBeCloseTo(
+        1,
+        5
+      );
+    });
+
+    it("getAverageRating scopes to a single course", () => {
+      const courseB = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Second",
+        slug: "second",
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+
+      recordReview(testDb, {
+        userId: s1.id,
+        courseId: base.course.id,
+        rating: 5,
+      });
+      recordReview(testDb, {
+        userId: s2.id,
+        courseId: courseB.id,
+        rating: 1,
+      });
+
+      expect(getAverageRating({ courseId: base.course.id })).toBe(5);
+      expect(getAverageRating({ courseId: courseB.id })).toBe(1);
+    });
+
+    it("getAverageQuizPassRate scopes to a single course", () => {
+      const courseB = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Second",
+        slug: "second",
+      });
+      const quizA = createQuizForCourse(testDb, {
+        courseId: base.course.id,
+        title: "Quiz A",
+      });
+      const quizB = createQuizForCourse(testDb, {
+        courseId: courseB.id,
+        title: "Quiz B",
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      recordAttempt(testDb, {
+        userId: s1.id,
+        quizId: quizA.id,
+        passed: true,
+        score: 1,
+      });
+      recordAttempt(testDb, {
+        userId: s1.id,
+        quizId: quizB.id,
+        passed: false,
+        score: 0,
+      });
+
+      expect(getAverageQuizPassRate({ courseId: base.course.id })).toBe(1);
+      expect(getAverageQuizPassRate({ courseId: courseB.id })).toBe(0);
+    });
+  });
+
+  describe("getCourseDropOff", () => {
+    it("returns an empty array when the course has no lessons", () => {
+      const rows = getCourseDropOff({ courseId: base.course.id });
+      expect(rows).toEqual([]);
+    });
+
+    it("returns lessons in module/lesson order with zero counts when nobody has progressed", () => {
+      seedCourseWithLessons(testDb, { courseId: base.course.id });
+
+      const rows = getCourseDropOff({ courseId: base.course.id });
+
+      expect(rows).toHaveLength(4);
+      expect(rows.map((r) => r.lessonTitle)).toEqual(["A1", "A2", "B1", "B2"]);
+      expect(rows.every((r) => r.reachedCount === 0)).toBe(true);
+    });
+
+    it("counts a student who completed every lesson at every lesson", () => {
+      const { lessonA1, lessonA2, lessonB1, lessonB2 } = seedCourseWithLessons(
+        testDb,
+        { courseId: base.course.id }
+      );
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      for (const lesson of [lessonA1, lessonA2, lessonB1, lessonB2]) {
+        recordLessonProgress(testDb, {
+          userId: s1.id,
+          lessonId: lesson.id,
+          status: schema.LessonProgressStatus.Completed,
+        });
+      }
+
+      const rows = getCourseDropOff({ courseId: base.course.id });
+      expect(rows.map((r) => r.reachedCount)).toEqual([1, 1, 1, 1]);
+    });
+
+    it("treats skip-ahead progress as having reached the earlier lessons", () => {
+      // Student only ever marks the LAST lesson as completed. Under the
+      // "reached" definition they should still count at every prior lesson.
+      const { lessonB2 } = seedCourseWithLessons(testDb, {
+        courseId: base.course.id,
+      });
+      const skipper = createStudent(testDb, "skipper@example.com");
+
+      recordLessonProgress(testDb, {
+        userId: skipper.id,
+        lessonId: lessonB2.id,
+        status: schema.LessonProgressStatus.Completed,
+      });
+
+      const rows = getCourseDropOff({ courseId: base.course.id });
+      expect(rows.map((r) => r.reachedCount)).toEqual([1, 1, 1, 1]);
+    });
+
+    it("excludes in_progress and not_started rows from the reach count", () => {
+      const { lessonA1, lessonA2 } = seedCourseWithLessons(testDb, {
+        courseId: base.course.id,
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+
+      // s1 only "in progress" on lesson A1 → does NOT count as reached.
+      recordLessonProgress(testDb, {
+        userId: s1.id,
+        lessonId: lessonA1.id,
+        status: schema.LessonProgressStatus.InProgress,
+      });
+      // s2 completed lesson A2 → counts at A1 and A2 only.
+      recordLessonProgress(testDb, {
+        userId: s2.id,
+        lessonId: lessonA2.id,
+        status: schema.LessonProgressStatus.Completed,
+      });
+
+      const rows = getCourseDropOff({ courseId: base.course.id });
+      expect(rows.map((r) => r.reachedCount)).toEqual([1, 1, 0, 0]);
+    });
+
+    it("produces a monotonically non-increasing funnel across mixed progress", () => {
+      // 4 students with progressively shallower completion depths.
+      // Students who reach lessonB1: 2 (s1, s2)
+      // Students who reach lessonA2: 3 (s1, s2, s3)
+      // Students who reach lessonA1: 4 (all)
+      // Students who reach lessonB2: 1 (s1)
+      const { lessonA1, lessonA2, lessonB1, lessonB2 } = seedCourseWithLessons(
+        testDb,
+        { courseId: base.course.id }
+      );
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+      const s3 = createStudent(testDb, "s3@example.com");
+      const s4 = createStudent(testDb, "s4@example.com");
+
+      // s1 finished everything
+      for (const lesson of [lessonA1, lessonA2, lessonB1, lessonB2]) {
+        recordLessonProgress(testDb, {
+          userId: s1.id,
+          lessonId: lesson.id,
+          status: schema.LessonProgressStatus.Completed,
+        });
+      }
+      // s2 stopped after lessonB1
+      for (const lesson of [lessonA1, lessonA2, lessonB1]) {
+        recordLessonProgress(testDb, {
+          userId: s2.id,
+          lessonId: lesson.id,
+          status: schema.LessonProgressStatus.Completed,
+        });
+      }
+      // s3 stopped after lessonA2
+      for (const lesson of [lessonA1, lessonA2]) {
+        recordLessonProgress(testDb, {
+          userId: s3.id,
+          lessonId: lesson.id,
+          status: schema.LessonProgressStatus.Completed,
+        });
+      }
+      // s4 only finished lessonA1
+      recordLessonProgress(testDb, {
+        userId: s4.id,
+        lessonId: lessonA1.id,
+        status: schema.LessonProgressStatus.Completed,
+      });
+
+      const rows = getCourseDropOff({ courseId: base.course.id });
+      expect(rows.map((r) => r.reachedCount)).toEqual([4, 3, 2, 1]);
+    });
+
+    it("ignores progress on lessons in other courses", () => {
+      const { lessonA1 } = seedCourseWithLessons(testDb, {
+        courseId: base.course.id,
+      });
+      const otherCourse = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Other",
+        slug: "other",
+      });
+      const otherSeed = seedCourseWithLessons(testDb, {
+        courseId: otherCourse.id,
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      // Progress on the OTHER course should not show up here.
+      recordLessonProgress(testDb, {
+        userId: s1.id,
+        lessonId: otherSeed.lessonA1.id,
+        status: schema.LessonProgressStatus.Completed,
+      });
+      // Progress on this course's first lesson should.
+      recordLessonProgress(testDb, {
+        userId: s1.id,
+        lessonId: lessonA1.id,
+        status: schema.LessonProgressStatus.Completed,
+      });
+
+      const rows = getCourseDropOff({ courseId: base.course.id });
+      expect(rows.map((r) => r.reachedCount)).toEqual([1, 0, 0, 0]);
+    });
+  });
+
+  describe("getCourseVideoWatchThrough", () => {
+    it("returns an empty array when the course has no lessons", () => {
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows).toEqual([]);
+    });
+
+    it("returns an empty array when no lessons have a duration", () => {
+      seedCourseWithLessons(testDb, {
+        courseId: base.course.id,
+        durationMinutes: null,
+      });
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows).toEqual([]);
+    });
+
+    it("hides lessons that have a duration but no watch events", () => {
+      seedCourseWithLessons(testDb, { courseId: base.course.id });
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows).toEqual([]);
+    });
+
+    it("uses the highest position per (user, lesson) when computing the ratio", () => {
+      // duration 10 minutes = 600 seconds. Single user, multiple events on
+      // the same lesson — only the maximum should drive the ratio.
+      const { lessonA1 } = seedCourseWithLessons(testDb, {
+        courseId: base.course.id,
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      recordWatchEvent(testDb, {
+        userId: s1.id,
+        lessonId: lessonA1.id,
+        positionSeconds: 100,
+      });
+      recordWatchEvent(testDb, {
+        userId: s1.id,
+        lessonId: lessonA1.id,
+        positionSeconds: 300,
+      });
+      recordWatchEvent(testDb, {
+        userId: s1.id,
+        lessonId: lessonA1.id,
+        positionSeconds: 50, // a stray seek-back must not lower the value
+      });
+
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].lessonId).toBe(lessonA1.id);
+      expect(rows[0].averageWatchThrough).toBeCloseTo(300 / 600, 5);
+    });
+
+    it("clamps watch-through to 1 when the recorded position exceeds the duration", () => {
+      const { lessonA1 } = seedCourseWithLessons(testDb, {
+        courseId: base.course.id,
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      // 6000 seconds reported on a 10-minute (600s) lesson — must clamp to 1.
+      recordWatchEvent(testDb, {
+        userId: s1.id,
+        lessonId: lessonA1.id,
+        positionSeconds: 6000,
+      });
+
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows[0].averageWatchThrough).toBe(1);
+    });
+
+    it("averages per-user clamped ratios across students", () => {
+      const { lessonA1 } = seedCourseWithLessons(testDb, {
+        courseId: base.course.id,
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+
+      // s1: 600/600 = 1.0; s2: 150/600 = 0.25 → mean = 0.625
+      recordWatchEvent(testDb, {
+        userId: s1.id,
+        lessonId: lessonA1.id,
+        positionSeconds: 600,
+      });
+      recordWatchEvent(testDb, {
+        userId: s2.id,
+        lessonId: lessonA1.id,
+        positionSeconds: 150,
+      });
+
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows[0].averageWatchThrough).toBeCloseTo(0.625, 5);
+    });
+
+    it("excludes lessons with no durationMinutes from the result", () => {
+      const moduleA = createModule(testDb, {
+        courseId: base.course.id,
+        title: "Module A",
+        position: 1,
+      });
+      const lessonWithDuration = createLesson(testDb, {
+        moduleId: moduleA.id,
+        title: "Has duration",
+        position: 1,
+        durationMinutes: 10,
+      });
+      const lessonWithoutDuration = createLesson(testDb, {
+        moduleId: moduleA.id,
+        title: "Missing duration",
+        position: 2,
+        durationMinutes: null,
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      recordWatchEvent(testDb, {
+        userId: s1.id,
+        lessonId: lessonWithDuration.id,
+        positionSeconds: 600,
+      });
+      // Even with watch events, this lesson must be excluded.
+      recordWatchEvent(testDb, {
+        userId: s1.id,
+        lessonId: lessonWithoutDuration.id,
+        positionSeconds: 999,
+      });
+
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows).toHaveLength(1);
+      expect(rows[0].lessonId).toBe(lessonWithDuration.id);
+    });
+
+    it("returns lessons ordered by module then lesson position", () => {
+      const { lessonA1, lessonA2, lessonB1, lessonB2 } = seedCourseWithLessons(
+        testDb,
+        { courseId: base.course.id }
+      );
+      const s1 = createStudent(testDb, "s1@example.com");
+
+      // Insert events in reverse order to make sure we're not relying on it.
+      for (const lesson of [lessonB2, lessonB1, lessonA2, lessonA1]) {
+        recordWatchEvent(testDb, {
+          userId: s1.id,
+          lessonId: lesson.id,
+          positionSeconds: 300,
+        });
+      }
+
+      const rows = getCourseVideoWatchThrough({ courseId: base.course.id });
+      expect(rows.map((r) => r.lessonTitle)).toEqual(["A1", "A2", "B1", "B2"]);
     });
   });
 });
