@@ -9,7 +9,7 @@ import {
   Users,
 } from "lucide-react";
 import { getCurrentUserId } from "~/lib/session";
-import { getUserById } from "~/services/userService";
+import { getUserById, getUsersByRole } from "~/services/userService";
 import { UserRole } from "~/db/schema";
 import {
   getAverageCompletionRate,
@@ -25,6 +25,7 @@ import { Button } from "~/components/ui/button";
 import { KpiCard } from "~/components/analytics/kpi-card";
 import { TrendLineChart } from "~/components/analytics/trend-line-chart";
 import { CourseTable } from "~/components/analytics/course-table";
+import { InstructorPicker } from "~/components/analytics/instructor-picker";
 
 export function meta() {
   return [
@@ -52,12 +53,51 @@ export async function loader({ request }: Route.LoaderArgs) {
     throw data("Only instructors can access analytics.", { status: 403 });
   }
 
-  // Instructors are scoped to their own data. Admins are unscoped in Phase 1
-  // (the instructor picker that lets them filter arrives in Phase 7).
+  // Phase 7 — admin instructor picker.
+  //
+  // Instructors are always scoped to their own ID; the picker doesn't apply to
+  // them. Admins read `?instructorId=N` from the URL to scope to a single
+  // instructor, or omit it for the platform-wide aggregate. The list of
+  // instructors is loaded so the picker dropdown can render their names.
+  //
+  // Bookmarkability: the URL is the source of truth. `/instructor/analytics`
+  // is "All instructors", `?instructorId=42` is "instructor 42". No hidden
+  // state in cookies or component-local state.
+  //
+  // Bad-ID handling: if the param parses to a number but doesn't match a
+  // current instructor (deleted account, role-changed, edited URL), we fall
+  // back to the platform-wide view rather than 404. A stale bookmark stays
+  // useful, and the picker still highlights "All instructors" so it's clear
+  // what happened.
+  let allInstructors: Array<{ id: number; name: string }> = [];
+  let selectedInstructorId: number | null = null;
+  let selectedInstructorName: string | null = null;
+
+  if (user.role === UserRole.Admin) {
+    allInstructors = getUsersByRole(UserRole.Instructor)
+      .map((row) => ({ id: row.id, name: row.name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const url = new URL(request.url);
+    const raw = url.searchParams.get("instructorId");
+    if (raw !== null) {
+      const parsed = Number.parseInt(raw, 10);
+      const match = Number.isNaN(parsed)
+        ? undefined
+        : allInstructors.find((i) => i.id === parsed);
+      if (match) {
+        selectedInstructorId = match.id;
+        selectedInstructorName = match.name;
+      }
+    }
+  }
+
   const scope =
     user.role === UserRole.Instructor
       ? { instructorId: currentUserId }
-      : {};
+      : selectedInstructorId !== null
+        ? { instructorId: selectedInstructorId }
+        : {};
 
   const totalRevenue = getTotalRevenue(scope);
   const totalEnrollments = getTotalEnrollments(scope);
@@ -70,6 +110,9 @@ export async function loader({ request }: Route.LoaderArgs) {
 
   return {
     viewerRole: user.role,
+    allInstructors,
+    selectedInstructorId,
+    selectedInstructorName,
     totalRevenue,
     totalEnrollments,
     avgCompletionRate,
@@ -115,6 +158,9 @@ export default function InstructorAnalytics({
 }: Route.ComponentProps) {
   const {
     viewerRole,
+    allInstructors,
+    selectedInstructorId,
+    selectedInstructorName,
     totalRevenue,
     totalEnrollments,
     avgCompletionRate,
@@ -124,6 +170,20 @@ export default function InstructorAnalytics({
     enrollmentTimeSeries,
     courseSummaries,
   } = loaderData;
+
+  const isAdmin = viewerRole === UserRole.Admin;
+
+  // Subtitle copy reflects exactly which slice of data the page is showing,
+  // so an admin can tell at a glance whether the picker is on a single
+  // instructor or the platform-wide view.
+  let subtitle: string;
+  if (!isAdmin) {
+    subtitle = "Performance across all of your courses.";
+  } else if (selectedInstructorName) {
+    subtitle = `Performance across all of ${selectedInstructorName}'s courses.`;
+  } else {
+    subtitle = "Platform-wide performance across every instructor.";
+  }
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -135,13 +195,17 @@ export default function InstructorAnalytics({
         <span className="text-foreground">Analytics</span>
       </nav>
 
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Analytics</h1>
-        <p className="mt-1 text-muted-foreground">
-          {viewerRole === UserRole.Admin
-            ? "Platform-wide performance across every instructor."
-            : "Performance across all of your courses."}
-        </p>
+      <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Analytics</h1>
+          <p className="mt-1 text-muted-foreground">{subtitle}</p>
+        </div>
+        {isAdmin && (
+          <InstructorPicker
+            instructors={allInstructors}
+            selectedInstructorId={selectedInstructorId}
+          />
+        )}
       </div>
 
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">

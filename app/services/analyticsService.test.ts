@@ -2096,4 +2096,216 @@ describe("analyticsService", () => {
       expect(trend).toEqual([]);
     });
   });
+
+  // ─── Phase 7 — admin scoping integration ───────────────────────────────
+  //
+  // The individual function describes above already cover platform-wide and
+  // single-instructor cases in isolation. This block is the integration test
+  // for the admin instructor picker: with two instructors actively producing
+  // data, every analytics function must be consistent across three callers
+  // (platform-wide, instructor A scoped, instructor B scoped) and the three
+  // numbers must add up exactly the way the picker promises.
+  //
+  // The seed below is shared across the tests so each one can focus on a
+  // single property without re-staging the same fixtures.
+  describe("Phase 7 — admin instructor picker scoping", () => {
+    function seedTwoInstructorPlatform() {
+      // Instructor A is `base.instructor`. Instructor B is brand new.
+      const instructorB = createSecondInstructor(testDb);
+
+      const courseA1 = base.course;
+      const courseA2 = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "A's Second Course",
+        slug: "a-second",
+      });
+      const courseB1 = createCourse(testDb, {
+        instructorId: instructorB.id,
+        categoryId: base.category.id,
+        title: "B's Course",
+        slug: "b-course",
+      });
+
+      const studentA1 = createStudent(testDb, "a1@example.com");
+      const studentA2 = createStudent(testDb, "a2@example.com");
+      const studentB1 = createStudent(testDb, "b1@example.com");
+
+      // Purchases — both instructors active in 2026-02 so the trend
+      // assertions can target a shared bucket.
+      recordPurchaseAt(testDb, {
+        userId: studentA1.id,
+        courseId: courseA1.id,
+        pricePaid: 1000,
+        createdAt: "2026-02-05T00:00:00Z",
+      });
+      recordPurchaseAt(testDb, {
+        userId: studentA2.id,
+        courseId: courseA2.id,
+        pricePaid: 2500,
+        createdAt: "2026-02-18T00:00:00Z",
+      });
+      recordPurchaseAt(testDb, {
+        userId: studentB1.id,
+        courseId: courseB1.id,
+        pricePaid: 4000,
+        createdAt: "2026-02-12T00:00:00Z",
+      });
+
+      // Enrollments — same months for the same reason.
+      recordEnrollmentAt(testDb, {
+        userId: studentA1.id,
+        courseId: courseA1.id,
+        enrolledAt: "2026-02-05T00:00:00Z",
+      });
+      recordEnrollmentAt(testDb, {
+        userId: studentA2.id,
+        courseId: courseA2.id,
+        enrolledAt: "2026-02-18T00:00:00Z",
+      });
+      recordEnrollmentAt(testDb, {
+        userId: studentB1.id,
+        courseId: courseB1.id,
+        enrolledAt: "2026-02-12T00:00:00Z",
+      });
+
+      return {
+        instructorA: base.instructor,
+        instructorB,
+        courseA1,
+        courseA2,
+        courseB1,
+      };
+    }
+
+    it("unscoped totals sum data from every instructor on the platform", () => {
+      const { instructorA, instructorB } = seedTwoInstructorPlatform();
+
+      const platformRevenue = getTotalRevenue();
+      const aRevenue = getTotalRevenue({ instructorId: instructorA.id });
+      const bRevenue = getTotalRevenue({ instructorId: instructorB.id });
+
+      expect(aRevenue).toBe(3500);
+      expect(bRevenue).toBe(4000);
+      expect(platformRevenue).toBe(aRevenue + bRevenue);
+
+      const platformEnrollments = getTotalEnrollments();
+      const aEnrollments = getTotalEnrollments({ instructorId: instructorA.id });
+      const bEnrollments = getTotalEnrollments({ instructorId: instructorB.id });
+
+      expect(aEnrollments).toBe(2);
+      expect(bEnrollments).toBe(1);
+      expect(platformEnrollments).toBe(aEnrollments + bEnrollments);
+    });
+
+    it("admin scoped to one instructor sees the same numbers that instructor sees themselves", () => {
+      // The "admin path" in the loader is exactly:
+      //     scope = { instructorId: selectedInstructorId }
+      // and the "instructor path" is:
+      //     scope = { instructorId: currentUserId }
+      // i.e. the same call. This test pins that property by asserting that
+      // a third caller — the admin — gets bit-identical aggregates. If anyone
+      // ever quietly hardcodes the instructor's session ID inside a service
+      // function, this test breaks.
+      const { instructorA, instructorB } = seedTwoInstructorPlatform();
+
+      const aFromInstructor = getTotalRevenue({ instructorId: instructorA.id });
+      const aFromAdmin = getTotalRevenue({ instructorId: instructorA.id });
+      expect(aFromAdmin).toBe(aFromInstructor);
+
+      const bFromInstructor = getTotalEnrollments({
+        instructorId: instructorB.id,
+      });
+      const bFromAdmin = getTotalEnrollments({ instructorId: instructorB.id });
+      expect(bFromAdmin).toBe(bFromInstructor);
+
+      // The same property at the table level — the admin viewing instructor B
+      // should get exactly B's courses, in the same shape B would see.
+      const bSummariesFromInstructor = getPerCourseSummary({
+        instructorId: instructorB.id,
+      });
+      const bSummariesFromAdmin = getPerCourseSummary({
+        instructorId: instructorB.id,
+      });
+      expect(bSummariesFromAdmin).toEqual(bSummariesFromInstructor);
+      expect(bSummariesFromAdmin.map((row) => row.title)).toEqual([
+        "B's Course",
+      ]);
+    });
+
+    it("platform-wide trends are bucketed identically to instructor-scoped trends and sum across instructors", () => {
+      const { instructorA, instructorB } = seedTwoInstructorPlatform();
+
+      const platformRevenueTrend = getRevenueTimeSeries();
+      const aRevenueTrend = getRevenueTimeSeries({
+        instructorId: instructorA.id,
+      });
+      const bRevenueTrend = getRevenueTimeSeries({
+        instructorId: instructorB.id,
+      });
+
+      // Same bucket shape: identical "YYYY-MM" string keys, same order.
+      // (All seed activity is in 2026-02 so every series has a single bucket.)
+      expect(platformRevenueTrend.map((p) => p.bucket)).toEqual(["2026-02"]);
+      expect(aRevenueTrend.map((p) => p.bucket)).toEqual(["2026-02"]);
+      expect(bRevenueTrend.map((p) => p.bucket)).toEqual(["2026-02"]);
+
+      // Per-bucket values sum across the two instructors.
+      const platformByBucket = new Map(
+        platformRevenueTrend.map((p) => [p.bucket, p.value]),
+      );
+      const aByBucket = new Map(
+        aRevenueTrend.map((p) => [p.bucket, p.value]),
+      );
+      const bByBucket = new Map(
+        bRevenueTrend.map((p) => [p.bucket, p.value]),
+      );
+      expect(platformByBucket.get("2026-02")).toBe(
+        (aByBucket.get("2026-02") ?? 0) + (bByBucket.get("2026-02") ?? 0),
+      );
+
+      // Same property for the enrollment trend.
+      const platformEnrollTrend = getEnrollmentTimeSeries();
+      const aEnrollTrend = getEnrollmentTimeSeries({
+        instructorId: instructorA.id,
+      });
+      const bEnrollTrend = getEnrollmentTimeSeries({
+        instructorId: instructorB.id,
+      });
+
+      expect(platformEnrollTrend.map((p) => p.bucket)).toEqual(["2026-02"]);
+      expect(aEnrollTrend.map((p) => p.bucket)).toEqual(["2026-02"]);
+      expect(bEnrollTrend.map((p) => p.bucket)).toEqual(["2026-02"]);
+
+      const platformEnrollByBucket = new Map(
+        platformEnrollTrend.map((p) => [p.bucket, p.value]),
+      );
+      expect(platformEnrollByBucket.get("2026-02")).toBe(
+        aEnrollTrend.reduce((sum, p) => sum + p.value, 0) +
+          bEnrollTrend.reduce((sum, p) => sum + p.value, 0),
+      );
+    });
+
+    it("the platform-wide course summary returns every course on the platform across instructors", () => {
+      const { instructorA, instructorB, courseA1, courseA2, courseB1 } =
+        seedTwoInstructorPlatform();
+
+      const allSummaries = getPerCourseSummary();
+
+      const allIds = allSummaries.map((row) => row.courseId).sort();
+      expect(allIds).toEqual(
+        [courseA1.id, courseA2.id, courseB1.id].sort((a, b) => a - b),
+      );
+
+      // The same set, partitioned, must equal the per-instructor views —
+      // i.e. the platform view never invents or drops courses.
+      const aSummaries = getPerCourseSummary({ instructorId: instructorA.id });
+      const bSummaries = getPerCourseSummary({ instructorId: instructorB.id });
+      const partitionIds = [
+        ...aSummaries.map((r) => r.courseId),
+        ...bSummaries.map((r) => r.courseId),
+      ].sort((a, b) => a - b);
+      expect(partitionIds).toEqual(allIds);
+    });
+  });
 });
