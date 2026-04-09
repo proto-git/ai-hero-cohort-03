@@ -17,9 +17,14 @@ import {
   getAverageCompletionRate,
   getAverageQuizPassRate,
   getAverageRating,
+  getCourseCountryRevenue,
   getCourseDropOff,
   getCourseQuizPerformance,
+  getCourseRatingDistribution,
+  getCourseRatingTrend,
   getCourseVideoWatchThrough,
+  getEnrollmentTimeSeries,
+  getRevenueTimeSeries,
   getTotalEnrollments,
   getTotalRevenue,
 } from "~/services/analyticsService";
@@ -30,11 +35,13 @@ import {
   TabsList,
   TabsTrigger,
 } from "~/components/ui/tabs";
-import { Card, CardContent } from "~/components/ui/card";
 import { KpiCard } from "~/components/analytics/kpi-card";
 import { DropOffChart } from "~/components/analytics/drop-off-chart";
 import { WatchThroughList } from "~/components/analytics/watch-through-list";
 import { QuizzesPanel } from "~/components/analytics/quizzes-panel";
+import { TrendLineChart } from "~/components/analytics/trend-line-chart";
+import { DistributionBarChart } from "~/components/analytics/distribution-bar-chart";
+import { CountryRevenueList } from "~/components/analytics/country-revenue-list";
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course Analytics";
@@ -105,6 +112,19 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const watchThrough = getCourseVideoWatchThrough(scope);
   const quizPerformance = getCourseQuizPerformance(scope);
 
+  // Phase 6 — Revenue + Ratings tab data. The two trend functions are the
+  // same ones the cross-course Overview uses; passing `courseId` instead of
+  // `instructorId` is what makes them course-scoped.
+  const revenueTrend = getRevenueTimeSeries(scope);
+  const enrollmentTrend = getEnrollmentTimeSeries(scope);
+  // Country revenue is always queried — gating happens in the component so
+  // the loader stays uniform regardless of pppEnabled. The query is cheap
+  // (one GROUP BY) and a course with PPP toggled off mid-life still has
+  // historic country data we'd want to show eventually.
+  const countryRevenue = getCourseCountryRevenue(scope);
+  const ratingDistribution = getCourseRatingDistribution(scope);
+  const ratingTrend = getCourseRatingTrend(scope);
+
   return {
     course,
     viewerRole: user.role,
@@ -116,6 +136,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     dropOff,
     watchThrough,
     quizPerformance,
+    revenueTrend,
+    enrollmentTrend,
+    countryRevenue,
+    ratingDistribution,
+    ratingTrend,
   };
 }
 
@@ -140,17 +165,12 @@ function formatRating(rating: number): string {
   return rating.toFixed(1);
 }
 
-/** A placeholder rendered for tabs that aren't wired up in this phase. */
-function ComingSoonPanel({ label }: { label: string }) {
-  return (
-    <Card>
-      <CardContent className="py-12 text-center">
-        <p className="text-sm text-muted-foreground">
-          {label} analytics are coming soon.
-        </p>
-      </CardContent>
-    </Card>
-  );
+/** Format cents as a dollar string for chart axes/tooltips. */
+function formatRevenueAxis(cents: number): string {
+  // Tight format on the axis itself; the tooltip uses the same function so
+  // both labels read identically. We always show two decimals to keep the
+  // axis tick widths consistent across the chart's lifecycle.
+  return `$${(cents / 100).toFixed(2)}`;
 }
 
 export default function InstructorCourseAnalytics({
@@ -166,7 +186,27 @@ export default function InstructorCourseAnalytics({
     dropOff,
     watchThrough,
     quizPerformance,
+    revenueTrend,
+    enrollmentTrend,
+    countryRevenue,
+    ratingDistribution,
+    ratingTrend,
   } = loaderData;
+
+  // The histogram always has five bars (1..5 stars). Highlight the
+  // course's modal rating so the instructor can see the dominant cohort
+  // at a glance — when no reviews exist, every count is 0 and nothing is
+  // highlighted, which the DistributionBarChart handles by showing its
+  // empty state.
+  const maxRatingCount = ratingDistribution.reduce(
+    (max, row) => (row.count > max ? row.count : max),
+    0
+  );
+  const ratingBars = ratingDistribution.map((row) => ({
+    label: `${row.stars}★`,
+    value: row.count,
+    highlighted: maxRatingCount > 0 && row.count === maxRatingCount,
+  }));
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -251,12 +291,44 @@ export default function InstructorCourseAnalytics({
           />
         </TabsContent>
 
-        <TabsContent value="revenue">
-          <ComingSoonPanel label="Revenue" />
+        <TabsContent value="revenue" className="space-y-6">
+          <TrendLineChart
+            title="Revenue over time"
+            description="Monthly revenue for this course. Months with no purchases appear as zero so the gap is visible."
+            data={revenueTrend}
+            formatY={formatRevenueAxis}
+            emptyMessage="No purchases yet — the trend will appear once students buy this course."
+          />
+
+          <TrendLineChart
+            title="Enrollments over time"
+            description="Monthly new enrollments for this course."
+            data={enrollmentTrend}
+            emptyMessage="No enrollments yet — the trend will appear once students enroll in this course."
+          />
+
+          <CountryRevenueList
+            title="Revenue by country"
+            description="Where this course's buyers are paying from. Purchases without a recorded country are bucketed as 'Unknown'."
+            rows={countryRevenue}
+            pppDisabled={!course.pppEnabled}
+          />
         </TabsContent>
 
-        <TabsContent value="ratings">
-          <ComingSoonPanel label="Ratings" />
+        <TabsContent value="ratings" className="space-y-6">
+          <DistributionBarChart
+            title="Rating distribution"
+            description="How many reviews fall into each star value. The most common rating is highlighted."
+            data={ratingBars}
+            emptyMessage="No reviews yet — the histogram will appear once students rate this course."
+          />
+
+          <TrendLineChart
+            title="Average rating over time"
+            description="Monthly average review rating. Months with no reviews are skipped — '0 stars' would imply terrible reviews instead of no data."
+            data={ratingTrend}
+            emptyMessage="No reviews yet — the trend will appear once students rate this course."
+          />
         </TabsContent>
       </Tabs>
     </div>

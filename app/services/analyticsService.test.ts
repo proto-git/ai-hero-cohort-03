@@ -23,6 +23,9 @@ import {
   getCourseDropOff,
   getCourseVideoWatchThrough,
   getCourseQuizPerformance,
+  getCourseCountryRevenue,
+  getCourseRatingDistribution,
+  getCourseRatingTrend,
 } from "./analyticsService";
 
 function createSecondInstructor(db: typeof testDb) {
@@ -101,9 +104,22 @@ function recordPurchaseAt(
     courseId: number;
     pricePaid: number;
     createdAt: string;
+    country?: string | null;
   }
 ) {
   return db.insert(schema.purchases).values(opts).returning().get();
+}
+
+function recordReviewAt(
+  db: typeof testDb,
+  opts: {
+    userId: number;
+    courseId: number;
+    rating: number;
+    createdAt: string;
+  }
+) {
+  return db.insert(schema.courseReviews).values(opts).returning().get();
 }
 
 function recordEnrollmentAt(
@@ -1751,6 +1767,333 @@ describe("analyticsService", () => {
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
 
       expect(rows.map((r) => r.quizTitle)).toEqual(["Quiz A", "Quiz B"]);
+    });
+  });
+
+  // Phase 6 — extending the existing time series functions to honor courseId.
+  // The instructor-scoped behavior is already covered above; these cases prove
+  // the per-course Revenue tab can call the same functions and get a single
+  // course's data even when other courses share the instructor.
+  describe("getRevenueTimeSeries scoped by courseId", () => {
+    it("excludes purchases from sibling courses owned by the same instructor", () => {
+      const siblingCourse = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Sibling",
+        slug: "sibling",
+      });
+      const buyer = createStudent(testDb, "buyer@example.com");
+
+      recordPurchaseAt(testDb, {
+        userId: buyer.id,
+        courseId: base.course.id,
+        pricePaid: 1000,
+        createdAt: "2026-02-01T00:00:00Z",
+      });
+      // Same instructor, different course — must NOT appear when scoped by courseId.
+      recordPurchaseAt(testDb, {
+        userId: buyer.id,
+        courseId: siblingCourse.id,
+        pricePaid: 9999,
+        createdAt: "2026-02-15T00:00:00Z",
+      });
+
+      const series = getRevenueTimeSeries({ courseId: base.course.id });
+
+      expect(series).toEqual([{ bucket: "2026-02", value: 1000 }]);
+    });
+  });
+
+  describe("getEnrollmentTimeSeries scoped by courseId", () => {
+    it("excludes enrollments from sibling courses owned by the same instructor", () => {
+      const siblingCourse = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Sibling",
+        slug: "sibling",
+      });
+      const s1 = createStudent(testDb, "s1@example.com");
+      const s2 = createStudent(testDb, "s2@example.com");
+
+      recordEnrollmentAt(testDb, {
+        userId: s1.id,
+        courseId: base.course.id,
+        enrolledAt: "2026-03-01T00:00:00Z",
+      });
+      recordEnrollmentAt(testDb, {
+        userId: s2.id,
+        courseId: siblingCourse.id,
+        enrolledAt: "2026-03-15T00:00:00Z",
+      });
+
+      const series = getEnrollmentTimeSeries({ courseId: base.course.id });
+
+      expect(series).toEqual([{ bucket: "2026-03", value: 1 }]);
+    });
+  });
+
+  describe("getCourseCountryRevenue", () => {
+    it("returns an empty array when the course has no purchases", () => {
+      const rows = getCourseCountryRevenue({ courseId: base.course.id });
+      expect(rows).toEqual([]);
+    });
+
+    it("buckets purchases with null country under 'Unknown'", () => {
+      const a = createStudent(testDb, "a@example.com");
+      const b = createStudent(testDb, "b@example.com");
+      const c = createStudent(testDb, "c@example.com");
+
+      recordPurchaseAt(testDb, {
+        userId: a.id,
+        courseId: base.course.id,
+        pricePaid: 1000,
+        createdAt: "2026-01-01T00:00:00Z",
+        country: "US",
+      });
+      recordPurchaseAt(testDb, {
+        userId: b.id,
+        courseId: base.course.id,
+        pricePaid: 500,
+        createdAt: "2026-01-02T00:00:00Z",
+        country: null,
+      });
+      recordPurchaseAt(testDb, {
+        userId: c.id,
+        courseId: base.course.id,
+        pricePaid: 750,
+        createdAt: "2026-01-03T00:00:00Z",
+        country: "",
+      });
+
+      const rows = getCourseCountryRevenue({ courseId: base.course.id });
+
+      // Both null and empty-string land in the same "Unknown" bucket.
+      const byCountry = new Map(rows.map((r) => [r.country, r.revenueCents]));
+      expect(byCountry.get("Unknown")).toBe(1250);
+      expect(byCountry.get("US")).toBe(1000);
+      expect(rows).toHaveLength(2);
+    });
+
+    it("sorts countries by revenue descending", () => {
+      const buyer = createStudent(testDb, "buyer@example.com");
+
+      recordPurchaseAt(testDb, {
+        userId: buyer.id,
+        courseId: base.course.id,
+        pricePaid: 100,
+        createdAt: "2026-01-01T00:00:00Z",
+        country: "GB",
+      });
+      recordPurchaseAt(testDb, {
+        userId: buyer.id,
+        courseId: base.course.id,
+        pricePaid: 5000,
+        createdAt: "2026-01-02T00:00:00Z",
+        country: "US",
+      });
+      recordPurchaseAt(testDb, {
+        userId: buyer.id,
+        courseId: base.course.id,
+        pricePaid: 1000,
+        createdAt: "2026-01-03T00:00:00Z",
+        country: "IN",
+      });
+
+      const rows = getCourseCountryRevenue({ courseId: base.course.id });
+      expect(rows.map((r) => r.country)).toEqual(["US", "IN", "GB"]);
+    });
+
+    it("sums to the same total as getTotalRevenue for the same course", () => {
+      const a = createStudent(testDb, "a@example.com");
+      const b = createStudent(testDb, "b@example.com");
+
+      recordPurchaseAt(testDb, {
+        userId: a.id,
+        courseId: base.course.id,
+        pricePaid: 1500,
+        createdAt: "2026-01-01T00:00:00Z",
+        country: "US",
+      });
+      recordPurchaseAt(testDb, {
+        userId: b.id,
+        courseId: base.course.id,
+        pricePaid: 2300,
+        createdAt: "2026-01-02T00:00:00Z",
+        country: null,
+      });
+
+      const rows = getCourseCountryRevenue({ courseId: base.course.id });
+      const breakdownTotal = rows.reduce((sum, r) => sum + r.revenueCents, 0);
+      const total = getTotalRevenue({ courseId: base.course.id });
+
+      expect(breakdownTotal).toBe(total);
+      expect(breakdownTotal).toBe(3800);
+    });
+
+    it("excludes purchases from sibling courses", () => {
+      const siblingCourse = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Sibling",
+        slug: "sibling",
+      });
+      const buyer = createStudent(testDb, "buyer@example.com");
+
+      recordPurchaseAt(testDb, {
+        userId: buyer.id,
+        courseId: base.course.id,
+        pricePaid: 100,
+        createdAt: "2026-01-01T00:00:00Z",
+        country: "US",
+      });
+      recordPurchaseAt(testDb, {
+        userId: buyer.id,
+        courseId: siblingCourse.id,
+        pricePaid: 9999,
+        createdAt: "2026-01-02T00:00:00Z",
+        country: "FR",
+      });
+
+      const rows = getCourseCountryRevenue({ courseId: base.course.id });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toEqual({ country: "US", revenueCents: 100 });
+    });
+  });
+
+  describe("getCourseRatingDistribution", () => {
+    it("returns five zero bins when the course has no reviews", () => {
+      const rows = getCourseRatingDistribution({ courseId: base.course.id });
+
+      expect(rows).toEqual([
+        { stars: 1, count: 0 },
+        { stars: 2, count: 0 },
+        { stars: 3, count: 0 },
+        { stars: 4, count: 0 },
+        { stars: 5, count: 0 },
+      ]);
+    });
+
+    it("counts each star value and sums to the total review count", () => {
+      // 5 reviews: two 5-stars, one 4, one 3, one 1.
+      const reviewers = [
+        createStudent(testDb, "r1@example.com"),
+        createStudent(testDb, "r2@example.com"),
+        createStudent(testDb, "r3@example.com"),
+        createStudent(testDb, "r4@example.com"),
+        createStudent(testDb, "r5@example.com"),
+      ];
+      const ratings = [5, 5, 4, 3, 1];
+      reviewers.forEach((student, index) => {
+        recordReview(testDb, {
+          userId: student.id,
+          courseId: base.course.id,
+          rating: ratings[index],
+        });
+      });
+
+      const rows = getCourseRatingDistribution({ courseId: base.course.id });
+      const byStar = new Map(rows.map((r) => [r.stars, r.count]));
+
+      expect(byStar.get(1)).toBe(1);
+      expect(byStar.get(2)).toBe(0);
+      expect(byStar.get(3)).toBe(1);
+      expect(byStar.get(4)).toBe(1);
+      expect(byStar.get(5)).toBe(2);
+
+      const histogramTotal = rows.reduce((sum, r) => sum + r.count, 0);
+      expect(histogramTotal).toBe(reviewers.length);
+    });
+
+    it("excludes reviews from sibling courses", () => {
+      const siblingCourse = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Sibling",
+        slug: "sibling",
+      });
+      const reviewer = createStudent(testDb, "r@example.com");
+
+      // A 1-star review on the sibling course must NOT show up in our histogram.
+      recordReview(testDb, {
+        userId: reviewer.id,
+        courseId: siblingCourse.id,
+        rating: 1,
+      });
+
+      const rows = getCourseRatingDistribution({ courseId: base.course.id });
+      expect(rows.every((r) => r.count === 0)).toBe(true);
+    });
+  });
+
+  describe("getCourseRatingTrend", () => {
+    it("returns an empty array when the course has no reviews", () => {
+      const trend = getCourseRatingTrend({ courseId: base.course.id });
+      expect(trend).toEqual([]);
+    });
+
+    it("groups reviews by month and orders them chronologically", () => {
+      const r1 = createStudent(testDb, "r1@example.com");
+      const r2 = createStudent(testDb, "r2@example.com");
+      const r3 = createStudent(testDb, "r3@example.com");
+      const r4 = createStudent(testDb, "r4@example.com");
+
+      // March: average should be (5 + 3) / 2 = 4
+      recordReviewAt(testDb, {
+        userId: r1.id,
+        courseId: base.course.id,
+        rating: 5,
+        createdAt: "2026-03-05T00:00:00Z",
+      });
+      recordReviewAt(testDb, {
+        userId: r2.id,
+        courseId: base.course.id,
+        rating: 3,
+        createdAt: "2026-03-20T00:00:00Z",
+      });
+      // January: single 4
+      recordReviewAt(testDb, {
+        userId: r3.id,
+        courseId: base.course.id,
+        rating: 4,
+        createdAt: "2026-01-10T00:00:00Z",
+      });
+      // May: single 2
+      recordReviewAt(testDb, {
+        userId: r4.id,
+        courseId: base.course.id,
+        rating: 2,
+        createdAt: "2026-05-01T00:00:00Z",
+      });
+
+      const trend = getCourseRatingTrend({ courseId: base.course.id });
+
+      // Sparse on purpose: February and April have no reviews and should NOT
+      // appear as zero buckets. Empty months mean "no data", not "0 stars".
+      expect(trend.map((p) => p.bucket)).toEqual(["2026-01", "2026-03", "2026-05"]);
+      const byBucket = new Map(trend.map((p) => [p.bucket, p.value]));
+      expect(byBucket.get("2026-01")).toBe(4);
+      expect(byBucket.get("2026-03")).toBe(4);
+      expect(byBucket.get("2026-05")).toBe(2);
+    });
+
+    it("excludes reviews from sibling courses", () => {
+      const siblingCourse = createCourse(testDb, {
+        instructorId: base.instructor.id,
+        categoryId: base.category.id,
+        title: "Sibling",
+        slug: "sibling",
+      });
+      const reviewer = createStudent(testDb, "r@example.com");
+
+      recordReviewAt(testDb, {
+        userId: reviewer.id,
+        courseId: siblingCourse.id,
+        rating: 5,
+        createdAt: "2026-03-01T00:00:00Z",
+      });
+
+      const trend = getCourseRatingTrend({ courseId: base.course.id });
+      expect(trend).toEqual([]);
     });
   });
 });

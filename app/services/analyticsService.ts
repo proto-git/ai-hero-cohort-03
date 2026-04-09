@@ -268,6 +268,12 @@ function fillBuckets(
  * One point per calendar month from the first purchase to the most recent
  * purchase in scope. Months with zero revenue appear as zero. Returns []
  * when there are no purchases in scope.
+ *
+ * Scoping (Phase 6 update):
+ *   Honors both `instructorId` and `courseId`. Phase 2 only used the
+ *   instructor scope; Phase 6 needs the same function to drive the
+ *   course-scoped Revenue tab. Both filters live in `buildCourseScopePredicate`
+ *   so we can't accidentally let one route diverge from the other.
  */
 export function getRevenueTimeSeries(
   opts: AnalyticsScope = {}
@@ -282,14 +288,10 @@ export function getRevenueTimeSeries(
     .from(purchases)
     .innerJoin(courses, eq(purchases.courseId, courses.id));
 
-  const rows =
-    opts.instructorId !== undefined
-      ? baseQuery
-          .where(eq(courses.instructorId, opts.instructorId))
-          .groupBy(bucketExpr)
-          .orderBy(bucketExpr)
-          .all()
-      : baseQuery.groupBy(bucketExpr).orderBy(bucketExpr).all();
+  const where = buildCourseScopePredicate(opts);
+  const rows = where
+    ? baseQuery.where(where).groupBy(bucketExpr).orderBy(bucketExpr).all()
+    : baseQuery.groupBy(bucketExpr).orderBy(bucketExpr).all();
 
   if (rows.length === 0) return [];
 
@@ -913,6 +915,10 @@ export function getCourseQuizPerformance(
  * Same bucketing rules as `getRevenueTimeSeries`: one point per calendar
  * month from earliest to latest enrollment in scope, zero-activity months
  * included. Returns [] when there are no enrollments in scope.
+ *
+ * Scoping (Phase 6 update): honors both `instructorId` and `courseId` via
+ * `buildCourseScopePredicate`, so the per-course Revenue tab can call this
+ * with `{ courseId }`.
  */
 export function getEnrollmentTimeSeries(
   opts: AnalyticsScope = {}
@@ -927,14 +933,10 @@ export function getEnrollmentTimeSeries(
     .from(enrollments)
     .innerJoin(courses, eq(enrollments.courseId, courses.id));
 
-  const rows =
-    opts.instructorId !== undefined
-      ? baseQuery
-          .where(eq(courses.instructorId, opts.instructorId))
-          .groupBy(bucketExpr)
-          .orderBy(bucketExpr)
-          .all()
-      : baseQuery.groupBy(bucketExpr).orderBy(bucketExpr).all();
+  const where = buildCourseScopePredicate(opts);
+  const rows = where
+    ? baseQuery.where(where).groupBy(bucketExpr).orderBy(bucketExpr).all()
+    : baseQuery.groupBy(bucketExpr).orderBy(bucketExpr).all();
 
   if (rows.length === 0) return [];
 
@@ -943,4 +945,127 @@ export function getEnrollmentTimeSeries(
     rows[rows.length - 1].bucket + "-01"
   );
   return fillBuckets(allBuckets, rows);
+}
+
+/** One row of the per-course country revenue breakdown. */
+export type CountryRevenueRow = {
+  /** ISO country code, or "Unknown" for purchases with a null/empty country. */
+  country: string;
+  /** Sum of `purchases.pricePaid` for that country, in cents. */
+  revenueCents: number;
+};
+
+/**
+ * Per-country revenue breakdown for a single course.
+ *
+ * Purchases with `country IS NULL` (or empty string, which we treat the same)
+ * are bucketed under the literal label "Unknown". This matches the PRD: the
+ * geographic mix should always include the unattributed buyers, never silently
+ * drop them.
+ *
+ * Sort order: descending by revenue. The "Unknown" bucket sorts naturally
+ * with everything else — we don't push it to the bottom, since on a course
+ * with mostly anonymous buyers it's the most informative bar.
+ *
+ * The route is responsible for gating this on `course.pppEnabled`. The
+ * service does not consult that flag because the same shape is useful for
+ * any future "where are buyers from" view, PPP or not.
+ *
+ * Returns [] when the course has no purchases.
+ */
+export function getCourseCountryRevenue(
+  opts: CourseScope
+): CountryRevenueRow[] {
+  // COALESCE handles both NULL country (older purchases) and the empty
+  // string (defensive — the column is nullable text and we don't want a
+  // blank-string row sneaking in next to a real "US" row).
+  const rows = db
+    .select({
+      country: sql<string>`COALESCE(NULLIF(${purchases.country}, ''), 'Unknown')`,
+      revenueCents: sql<number>`COALESCE(SUM(${purchases.pricePaid}), 0)`,
+    })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(eq(courses.id, opts.courseId))
+    .groupBy(sql`COALESCE(NULLIF(${purchases.country}, ''), 'Unknown')`)
+    .orderBy(sql`SUM(${purchases.pricePaid}) DESC`)
+    .all();
+
+  return rows.map((r) => ({
+    country: r.country,
+    revenueCents: r.revenueCents,
+  }));
+}
+
+/** One bin of the rating histogram. Always 5 entries (1..5) when returned. */
+export type RatingDistributionRow = {
+  stars: 1 | 2 | 3 | 4 | 5;
+  count: number;
+};
+
+/**
+ * Star rating histogram for a single course.
+ *
+ * Always returns exactly 5 rows in order from 1 → 5 stars, even if some
+ * bins have zero reviews. A histogram with missing bars looks broken; the
+ * UI should always see all five categories so the X axis is consistent
+ * across courses with different review distributions.
+ *
+ * The sum of all bin counts equals the total number of reviews for the
+ * course (asserted in tests).
+ */
+export function getCourseRatingDistribution(
+  opts: CourseScope
+): RatingDistributionRow[] {
+  const rows = db
+    .select({
+      rating: courseReviews.rating,
+      count: sql<number>`COUNT(*)`,
+    })
+    .from(courseReviews)
+    .where(eq(courseReviews.courseId, opts.courseId))
+    .groupBy(courseReviews.rating)
+    .all();
+
+  // Anchor on the fixed 1..5 list so empty bins always appear.
+  const countByStars = new Map(rows.map((r) => [r.rating, r.count]));
+  const stars: Array<1 | 2 | 3 | 4 | 5> = [1, 2, 3, 4, 5];
+  return stars.map((star) => ({
+    stars: star,
+    count: countByStars.get(star) ?? 0,
+  }));
+}
+
+/**
+ * Average rating trend for a single course, monthly.
+ *
+ * Each point's value is the AVG(rating) of every review created in that
+ * month. Buckets are "YYYY-MM" strings ordered chronologically.
+ *
+ * Empty-month policy (Phase 6 design decision):
+ *   Unlike `getRevenueTimeSeries` and `getEnrollmentTimeSeries`, this trend
+ *   does NOT fill empty months with zero. The reason: a "0 stars" bar would
+ *   read as "the course got terrible reviews this month", which is not the
+ *   same story as "no reviews this month". A sparse line — only months with
+ *   actual reviews — is the honest visualization. The chart is still in
+ *   chronological order, and Recharts simply draws a line between adjacent
+ *   data points without inventing values for the gaps.
+ *
+ * Returns [] when the course has no reviews at all (UI shows empty state).
+ */
+export function getCourseRatingTrend(opts: CourseScope): TimeSeriesPoint[] {
+  const bucketExpr = sql<string>`strftime('%Y-%m', ${courseReviews.createdAt})`;
+
+  const rows = db
+    .select({
+      bucket: bucketExpr,
+      value: sql<number>`AVG(${courseReviews.rating})`,
+    })
+    .from(courseReviews)
+    .where(eq(courseReviews.courseId, opts.courseId))
+    .groupBy(bucketExpr)
+    .orderBy(bucketExpr)
+    .all();
+
+  return rows.map((r) => ({ bucket: r.bucket, value: r.value }));
 }
