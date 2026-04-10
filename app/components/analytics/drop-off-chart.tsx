@@ -116,8 +116,8 @@ export function DropOffChart({
                 <Tooltip
                   cursor={{ className: "fill-muted/50" }}
                   contentStyle={{
-                    backgroundColor: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--border))",
+                    backgroundColor: "var(--background)",
+                    border: "1px solid var(--border)",
                     borderRadius: "0.5rem",
                     fontSize: "0.875rem",
                   }}
@@ -138,8 +138,8 @@ export function DropOffChart({
                       // module group index so adjacent modules contrast.
                       fill={
                         row.moduleGroupIndex % 2 === 0
-                          ? "hsl(var(--primary))"
-                          : "hsl(var(--primary) / 0.55)"
+                          ? "var(--primary)"
+                          : "var(--muted-foreground)"
                       }
                     />
                   ))}

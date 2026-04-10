@@ -94,8 +94,8 @@ export function DistributionBarChart({
             <Tooltip
               cursor={{ className: "fill-muted/50" }}
               contentStyle={{
-                backgroundColor: "hsl(var(--background))",
-                border: "1px solid hsl(var(--border))",
+                backgroundColor: "var(--background)",
+                border: "1px solid var(--border)",
                 borderRadius: "0.5rem",
                 fontSize: "0.875rem",
               }}
@@ -113,8 +113,8 @@ export function DistributionBarChart({
                   // dimmer muted-foreground so they read as distractors.
                   fill={
                     row.highlighted
-                      ? "hsl(var(--primary))"
-                      : "hsl(var(--muted-foreground) / 0.4)"
+                      ? "var(--primary)"
+                      : "var(--muted-foreground)"
                   }
                 />
               ))}

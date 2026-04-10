@@ -90,8 +90,8 @@ export function TrendLineChart({
                     return formatY ? formatY(value) : String(value);
                   }}
                   contentStyle={{
-                    backgroundColor: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--border))",
+                    backgroundColor: "var(--background)",
+                    border: "1px solid var(--border)",
                     borderRadius: "0.5rem",
                     fontSize: "0.875rem",
                   }}
