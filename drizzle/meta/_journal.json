@@ -50,6 +50,13 @@
       "when": 1775352034602,
       "tag": "0006_cynical_wild_child",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1776049807843,
+      "tag": "0007_lovely_omega_sentinel",
+      "breakpoints": true
     }
   ]
 }

@@ -29,6 +29,10 @@ export enum CommentStatus {
   Deleted = "deleted",
 }
 
+export enum NotificationType {
+  Enrollment = "enrollment",
+}
+
 export enum TeamMemberRole {
   Admin = "admin",
   Member = "member",
@@ -311,6 +315,21 @@ export const lessonBookmarks = sqliteTable(
   },
   (table) => [unique().on(table.userId, table.lessonId)]
 );
+
+export const notifications = sqliteTable("notifications", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  recipientUserId: integer("recipient_user_id")
+    .notNull()
+    .references(() => users.id),
+  type: text("type").notNull().$type<NotificationType>(),
+  title: text("title").notNull(),
+  message: text("message").notNull(),
+  linkUrl: text("link_url").notNull(),
+  isRead: integer("is_read", { mode: "boolean" }).notNull().default(false),
+  createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
 
 export const videoWatchEvents = sqliteTable("video_watch_events", {
   id: integer("id").primaryKey({ autoIncrement: true }),

@@ -57,4 +57,12 @@ export default [
   route("api/course-reviews", "routes/api.course-reviews.ts"),
   route("api/lesson-comments", "routes/api.lesson-comments.ts"),
   route("api/set-dev-country", "routes/api.set-dev-country.ts"),
+  route(
+    "api/notifications/mark-read",
+    "routes/api.notifications.mark-read.ts"
+  ),
+  route(
+    "api/notifications/mark-all-read",
+    "routes/api.notifications.mark-all-read.ts"
+  ),
 ] satisfies RouteConfig;
