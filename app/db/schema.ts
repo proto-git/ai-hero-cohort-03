@@ -1,4 +1,11 @@
-import { sqliteTable, text, integer, real, unique, index } from "drizzle-orm/sqlite-core";
+import {
+  sqliteTable,
+  text,
+  integer,
+  real,
+  unique,
+  index,
+} from "drizzle-orm/sqlite-core";
 
 export enum UserRole {
   Student = "student",
@@ -31,6 +38,7 @@ export enum CommentStatus {
 
 export enum NotificationType {
   Enrollment = "enrollment",
+  CouponRedemption = "coupon_redemption",
 }
 
 export enum TeamMemberRole {

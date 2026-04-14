@@ -51,10 +51,13 @@ export async function loader({ request }: Route.LoaderArgs) {
       })
     : [];
 
-  // Fetch notifications only for instructors
+  // Fetch notifications for anyone who can receive them: instructors (enrollment
+  // notifications) and team admins (coupon redemption notifications).
+  const userIsTeamAdmin = currentUserId ? isTeamAdmin(currentUserId) : false;
   const isInstructor = currentUser?.role === UserRole.Instructor;
+  const canReceiveNotifications = isInstructor || userIsTeamAdmin;
   const notificationData =
-    isInstructor && currentUserId
+    canReceiveNotifications && currentUserId
       ? {
           unreadCount: getUnreadCount(currentUserId),
           notifications: getNotifications(currentUserId, 5, 0),
@@ -75,7 +78,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     devCountry,
     countryTierInfo,
     countries: COUNTRIES,
-    isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    isTeamAdmin: userIsTeamAdmin,
     notificationData,
   };
 }

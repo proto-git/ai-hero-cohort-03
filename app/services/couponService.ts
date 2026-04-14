@@ -1,6 +1,16 @@
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, sql } from "drizzle-orm";
 import { db } from "~/db";
-import { coupons, purchases, enrollments } from "~/db/schema";
+import {
+  coupons,
+  purchases,
+  enrollments,
+  courses,
+  users,
+  teamMembers,
+  TeamMemberRole,
+  NotificationType,
+} from "~/db/schema";
+import { createNotification } from "./notificationService";
 import crypto from "crypto";
 
 // ─── Coupon Service ───
@@ -115,5 +125,61 @@ export function redeemCoupon(
     .returning()
     .get();
 
+  notifyTeamAdminsOfRedemption(coupon.teamId, coupon.courseId, userId);
+
   return { ok: true, enrollment };
+}
+
+function notifyTeamAdminsOfRedemption(
+  teamId: number,
+  courseId: number,
+  redeemerUserId: number
+) {
+  const redeemer = db
+    .select()
+    .from(users)
+    .where(eq(users.id, redeemerUserId))
+    .get();
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, courseId))
+    .get();
+
+  if (!redeemer || !course) return;
+
+  const totals = db
+    .select({
+      total: sql<number>`count(*)`,
+      remaining: sql<number>`sum(case when ${coupons.redeemedByUserId} is null then 1 else 0 end)`,
+    })
+    .from(coupons)
+    .where(and(eq(coupons.teamId, teamId), eq(coupons.courseId, courseId)))
+    .get();
+
+  const total = totals?.total ?? 0;
+  const remaining = totals?.remaining ?? 0;
+
+  const admins = db
+    .select({ userId: teamMembers.userId })
+    .from(teamMembers)
+    .where(
+      and(
+        eq(teamMembers.teamId, teamId),
+        eq(teamMembers.role, TeamMemberRole.Admin)
+      )
+    )
+    .all();
+
+  const message = `${redeemer.name} redeemed a coupon for ${course.title} (${remaining} of ${total} seats remaining)`;
+
+  for (const admin of admins) {
+    createNotification(
+      admin.userId,
+      NotificationType.CouponRedemption,
+      "Seat Claimed",
+      message,
+      "/team"
+    );
+  }
 }
