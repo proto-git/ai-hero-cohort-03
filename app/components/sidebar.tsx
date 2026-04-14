@@ -89,9 +89,13 @@ const navItems: NavItem[] = [
     label: "Analytics",
     to: "/instructor/analytics",
     icon: <BarChart3 className="size-4" />,
-    // Admins also see analytics (Phase 7) — the picker on the page lets them
-    // switch between platform-wide aggregates and any individual instructor.
-    roles: [UserRole.Instructor, UserRole.Admin],
+    roles: [UserRole.Instructor],
+  },
+  {
+    label: "Analytics",
+    to: "/admin/analytics",
+    icon: <BarChart3 className="size-4" />,
+    roles: [UserRole.Admin],
   },
   {
     label: "Manage Users",

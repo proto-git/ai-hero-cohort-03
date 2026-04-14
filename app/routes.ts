@@ -42,6 +42,7 @@ export default [
       "instructor/:courseId/students",
       "routes/instructor.$courseId.students.tsx"
     ),
+    route("admin/analytics", "routes/admin.analytics.tsx"),
     route("admin/users", "routes/admin.users.tsx"),
     route("admin/courses", "routes/admin.courses.tsx"),
     route("admin/categories", "routes/admin.categories.tsx"),
@@ -57,10 +58,7 @@ export default [
   route("api/course-reviews", "routes/api.course-reviews.ts"),
   route("api/lesson-comments", "routes/api.lesson-comments.ts"),
   route("api/set-dev-country", "routes/api.set-dev-country.ts"),
-  route(
-    "api/notifications/mark-read",
-    "routes/api.notifications.mark-read.ts"
-  ),
+  route("api/notifications/mark-read", "routes/api.notifications.mark-read.ts"),
   route(
     "api/notifications/mark-all-read",
     "routes/api.notifications.mark-all-read.ts"

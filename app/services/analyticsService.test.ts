@@ -26,6 +26,9 @@ import {
   getCourseCountryRevenue,
   getCourseRatingDistribution,
   getCourseRatingTrend,
+  getAdminTotalRevenue,
+  getAdminTotalEnrollments,
+  getAdminTopEarningCourse,
 } from "./analyticsService";
 
 function createSecondInstructor(db: typeof testDb) {
@@ -312,7 +315,8 @@ function seedCourseWithLessons(
     title: "Module B",
     position: 2,
   });
-  const duration = opts.durationMinutes === undefined ? 10 : opts.durationMinutes;
+  const duration =
+    opts.durationMinutes === undefined ? 10 : opts.durationMinutes;
   const lessonA1 = createLesson(db, {
     moduleId: moduleA.id,
     title: "A1",
@@ -1149,10 +1153,9 @@ describe("analyticsService", () => {
         completedAt: "2026-01-01T00:00:00Z",
       });
 
-      expect(getAverageCompletionRate({ courseId: base.course.id })).toBeCloseTo(
-        0.5,
-        5
-      );
+      expect(
+        getAverageCompletionRate({ courseId: base.course.id })
+      ).toBeCloseTo(0.5, 5);
       expect(getAverageCompletionRate({ courseId: courseB.id })).toBeCloseTo(
         1,
         5
@@ -1565,10 +1568,30 @@ describe("analyticsService", () => {
       // Notably: s1 has 3 fails + 1 pass (so under "first attempt only" they
       // would count as a fail). The all-attempts definition we locked in
       // produces 1/4 = 0.25 here.
-      recordAttempt(testDb, { userId: s1.id, quizId: quiz.id, passed: false, score: 0.2 });
-      recordAttempt(testDb, { userId: s1.id, quizId: quiz.id, passed: false, score: 0.4 });
-      recordAttempt(testDb, { userId: s1.id, quizId: quiz.id, passed: true, score: 0.9 });
-      recordAttempt(testDb, { userId: s2.id, quizId: quiz.id, passed: false, score: 0.3 });
+      recordAttempt(testDb, {
+        userId: s1.id,
+        quizId: quiz.id,
+        passed: false,
+        score: 0.2,
+      });
+      recordAttempt(testDb, {
+        userId: s1.id,
+        quizId: quiz.id,
+        passed: false,
+        score: 0.4,
+      });
+      recordAttempt(testDb, {
+        userId: s1.id,
+        quizId: quiz.id,
+        passed: true,
+        score: 0.9,
+      });
+      recordAttempt(testDb, {
+        userId: s2.id,
+        quizId: quiz.id,
+        passed: false,
+        score: 0.3,
+      });
 
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
 
@@ -1601,14 +1624,50 @@ describe("analyticsService", () => {
       const student = createStudent(testDb, "s@example.com");
 
       // 4 answers: 3 correct, 1 wrong → 0.75.
-      const a1 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
-      const a2 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
-      const a3 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
-      const a4 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: false, score: 0 });
-      recordAnswer(testDb, { attemptId: a1.id, questionId: question.id, selectedOptionId: correctOption.id });
-      recordAnswer(testDb, { attemptId: a2.id, questionId: question.id, selectedOptionId: correctOption.id });
-      recordAnswer(testDb, { attemptId: a3.id, questionId: question.id, selectedOptionId: correctOption.id });
-      recordAnswer(testDb, { attemptId: a4.id, questionId: question.id, selectedOptionId: wrongOption.id });
+      const a1 = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: true,
+        score: 1,
+      });
+      const a2 = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: true,
+        score: 1,
+      });
+      const a3 = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: true,
+        score: 1,
+      });
+      const a4 = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: false,
+        score: 0,
+      });
+      recordAnswer(testDb, {
+        attemptId: a1.id,
+        questionId: question.id,
+        selectedOptionId: correctOption.id,
+      });
+      recordAnswer(testDb, {
+        attemptId: a2.id,
+        questionId: question.id,
+        selectedOptionId: correctOption.id,
+      });
+      recordAnswer(testDb, {
+        attemptId: a3.id,
+        questionId: question.id,
+        selectedOptionId: correctOption.id,
+      });
+      recordAnswer(testDb, {
+        attemptId: a4.id,
+        questionId: question.id,
+        selectedOptionId: wrongOption.id,
+      });
 
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
       const q = rows[0].questions[0];
@@ -1628,18 +1687,57 @@ describe("analyticsService", () => {
         questionText: "Pick an option",
         position: 1,
       });
-      const optA = createOption(testDb, { questionId: question.id, optionText: "A", isCorrect: true });
-      const optB = createOption(testDb, { questionId: question.id, optionText: "B", isCorrect: false });
-      const optC = createOption(testDb, { questionId: question.id, optionText: "C", isCorrect: false });
+      const optA = createOption(testDb, {
+        questionId: question.id,
+        optionText: "A",
+        isCorrect: true,
+      });
+      const optB = createOption(testDb, {
+        questionId: question.id,
+        optionText: "B",
+        isCorrect: false,
+      });
+      const optC = createOption(testDb, {
+        questionId: question.id,
+        optionText: "C",
+        isCorrect: false,
+      });
       const student = createStudent(testDb, "s@example.com");
 
       // 3 answers: 2 picked A, 1 picked B, nobody picked C.
-      const att1 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
-      const att2 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
-      const att3 = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: false, score: 0 });
-      recordAnswer(testDb, { attemptId: att1.id, questionId: question.id, selectedOptionId: optA.id });
-      recordAnswer(testDb, { attemptId: att2.id, questionId: question.id, selectedOptionId: optA.id });
-      recordAnswer(testDb, { attemptId: att3.id, questionId: question.id, selectedOptionId: optB.id });
+      const att1 = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: true,
+        score: 1,
+      });
+      const att2 = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: true,
+        score: 1,
+      });
+      const att3 = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: false,
+        score: 0,
+      });
+      recordAnswer(testDb, {
+        attemptId: att1.id,
+        questionId: question.id,
+        selectedOptionId: optA.id,
+      });
+      recordAnswer(testDb, {
+        attemptId: att2.id,
+        questionId: question.id,
+        selectedOptionId: optA.id,
+      });
+      recordAnswer(testDb, {
+        attemptId: att3.id,
+        questionId: question.id,
+        selectedOptionId: optB.id,
+      });
 
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
       const options = rows[0].questions[0].options;
@@ -1651,7 +1749,10 @@ describe("analyticsService", () => {
       expect(byId.get(optB.id)?.selectedCount).toBe(1);
       expect(byId.get(optC.id)?.selectedCount).toBe(0);
 
-      const totalSelections = options.reduce((sum, o) => sum + o.selectedCount, 0);
+      const totalSelections = options.reduce(
+        (sum, o) => sum + o.selectedCount,
+        0
+      );
       expect(totalSelections).toBe(rows[0].questions[0].totalAnswers);
     });
 
@@ -1665,21 +1766,42 @@ describe("analyticsService", () => {
         questionText: "Pick A",
         position: 1,
       });
-      const optA = createOption(testDb, { questionId: question.id, optionText: "A", isCorrect: true });
-      const optB = createOption(testDb, { questionId: question.id, optionText: "B", isCorrect: false });
+      const optA = createOption(testDb, {
+        questionId: question.id,
+        optionText: "A",
+        isCorrect: true,
+      });
+      const optB = createOption(testDb, {
+        questionId: question.id,
+        optionText: "B",
+        isCorrect: false,
+      });
       const student = createStudent(testDb, "s@example.com");
 
-      const att = recordAttempt(testDb, { userId: student.id, quizId: quiz.id, passed: true, score: 1 });
-      recordAnswer(testDb, { attemptId: att.id, questionId: question.id, selectedOptionId: optA.id });
+      const att = recordAttempt(testDb, {
+        userId: student.id,
+        quizId: quiz.id,
+        passed: true,
+        score: 1,
+      });
+      recordAnswer(testDb, {
+        attemptId: att.id,
+        questionId: question.id,
+        selectedOptionId: optA.id,
+      });
 
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
       const options = rows[0].questions[0].options;
 
       expect(rows[0].questions[0].correctRate).toBe(1);
-      expect(options.find((o) => o.optionId === optA.id)?.selectedCount).toBe(1);
+      expect(options.find((o) => o.optionId === optA.id)?.selectedCount).toBe(
+        1
+      );
       // The other option must still appear, just with 0 — UI shouldn't have
       // to special-case "no bar at all".
-      expect(options.find((o) => o.optionId === optB.id)?.selectedCount).toBe(0);
+      expect(options.find((o) => o.optionId === optB.id)?.selectedCount).toBe(
+        0
+      );
     });
 
     it("returns a question with zero answers as an empty distribution, not NaN", () => {
@@ -1692,8 +1814,16 @@ describe("analyticsService", () => {
         questionText: "Untouched",
         position: 1,
       });
-      createOption(testDb, { questionId: question.id, optionText: "A", isCorrect: true });
-      createOption(testDb, { questionId: question.id, optionText: "B", isCorrect: false });
+      createOption(testDb, {
+        questionId: question.id,
+        optionText: "A",
+        isCorrect: true,
+      });
+      createOption(testDb, {
+        questionId: question.id,
+        optionText: "B",
+        isCorrect: false,
+      });
 
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
       const q = rows[0].questions[0];
@@ -1725,9 +1855,24 @@ describe("analyticsService", () => {
       });
       const student = createStudent(testDb, "s@example.com");
       // Heavy data on the OTHER quiz must not leak into our course's results.
-      recordAttempt(testDb, { userId: student.id, quizId: otherQuiz.id, passed: false, score: 0 });
-      recordAttempt(testDb, { userId: student.id, quizId: otherQuiz.id, passed: false, score: 0 });
-      recordAttempt(testDb, { userId: student.id, quizId: myQuiz.id, passed: true, score: 1 });
+      recordAttempt(testDb, {
+        userId: student.id,
+        quizId: otherQuiz.id,
+        passed: false,
+        score: 0,
+      });
+      recordAttempt(testDb, {
+        userId: student.id,
+        quizId: otherQuiz.id,
+        passed: false,
+        score: 0,
+      });
+      recordAttempt(testDb, {
+        userId: student.id,
+        quizId: myQuiz.id,
+        passed: true,
+        score: 1,
+      });
 
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
 
@@ -1761,8 +1906,14 @@ describe("analyticsService", () => {
       });
 
       // Insert quizzes in REVERSE order to make sure ordering doesn't depend on insert order.
-      testDb.insert(schema.quizzes).values({ lessonId: lessonB.id, title: "Quiz B", passingScore: 0.7 }).run();
-      testDb.insert(schema.quizzes).values({ lessonId: lessonA.id, title: "Quiz A", passingScore: 0.7 }).run();
+      testDb
+        .insert(schema.quizzes)
+        .values({ lessonId: lessonB.id, title: "Quiz B", passingScore: 0.7 })
+        .run();
+      testDb
+        .insert(schema.quizzes)
+        .values({ lessonId: lessonA.id, title: "Quiz A", passingScore: 0.7 })
+        .run();
 
       const rows = getCourseQuizPerformance({ courseId: base.course.id });
 
@@ -2069,7 +2220,11 @@ describe("analyticsService", () => {
 
       // Sparse on purpose: February and April have no reviews and should NOT
       // appear as zero buckets. Empty months mean "no data", not "0 stars".
-      expect(trend.map((p) => p.bucket)).toEqual(["2026-01", "2026-03", "2026-05"]);
+      expect(trend.map((p) => p.bucket)).toEqual([
+        "2026-01",
+        "2026-03",
+        "2026-05",
+      ]);
       const byBucket = new Map(trend.map((p) => [p.bucket, p.value]));
       expect(byBucket.get("2026-01")).toBe(4);
       expect(byBucket.get("2026-03")).toBe(4);
@@ -2190,8 +2345,12 @@ describe("analyticsService", () => {
       expect(platformRevenue).toBe(aRevenue + bRevenue);
 
       const platformEnrollments = getTotalEnrollments();
-      const aEnrollments = getTotalEnrollments({ instructorId: instructorA.id });
-      const bEnrollments = getTotalEnrollments({ instructorId: instructorB.id });
+      const aEnrollments = getTotalEnrollments({
+        instructorId: instructorA.id,
+      });
+      const bEnrollments = getTotalEnrollments({
+        instructorId: instructorB.id,
+      });
 
       expect(aEnrollments).toBe(2);
       expect(bEnrollments).toBe(1);
@@ -2252,16 +2411,12 @@ describe("analyticsService", () => {
 
       // Per-bucket values sum across the two instructors.
       const platformByBucket = new Map(
-        platformRevenueTrend.map((p) => [p.bucket, p.value]),
+        platformRevenueTrend.map((p) => [p.bucket, p.value])
       );
-      const aByBucket = new Map(
-        aRevenueTrend.map((p) => [p.bucket, p.value]),
-      );
-      const bByBucket = new Map(
-        bRevenueTrend.map((p) => [p.bucket, p.value]),
-      );
+      const aByBucket = new Map(aRevenueTrend.map((p) => [p.bucket, p.value]));
+      const bByBucket = new Map(bRevenueTrend.map((p) => [p.bucket, p.value]));
       expect(platformByBucket.get("2026-02")).toBe(
-        (aByBucket.get("2026-02") ?? 0) + (bByBucket.get("2026-02") ?? 0),
+        (aByBucket.get("2026-02") ?? 0) + (bByBucket.get("2026-02") ?? 0)
       );
 
       // Same property for the enrollment trend.
@@ -2278,11 +2433,11 @@ describe("analyticsService", () => {
       expect(bEnrollTrend.map((p) => p.bucket)).toEqual(["2026-02"]);
 
       const platformEnrollByBucket = new Map(
-        platformEnrollTrend.map((p) => [p.bucket, p.value]),
+        platformEnrollTrend.map((p) => [p.bucket, p.value])
       );
       expect(platformEnrollByBucket.get("2026-02")).toBe(
         aEnrollTrend.reduce((sum, p) => sum + p.value, 0) +
-          bEnrollTrend.reduce((sum, p) => sum + p.value, 0),
+          bEnrollTrend.reduce((sum, p) => sum + p.value, 0)
       );
     });
 
@@ -2294,7 +2449,7 @@ describe("analyticsService", () => {
 
       const allIds = allSummaries.map((row) => row.courseId).sort();
       expect(allIds).toEqual(
-        [courseA1.id, courseA2.id, courseB1.id].sort((a, b) => a - b),
+        [courseA1.id, courseA2.id, courseB1.id].sort((a, b) => a - b)
       );
 
       // The same set, partitioned, must equal the per-instructor views —
@@ -2306,6 +2461,262 @@ describe("analyticsService", () => {
         ...bSummaries.map((r) => r.courseId),
       ].sort((a, b) => a - b);
       expect(partitionIds).toEqual(allIds);
+    });
+  });
+
+  // ─── Admin analytics ────────────────────────────────────────────────────
+  //
+  // The admin dashboard at /admin/analytics uses rolling time-window
+  // aggregates rather than all-time. Tests below drive periods relative to
+  // `new Date()` so they remain stable regardless of what day they run on;
+  // we don't need to freeze time because the assertions only care about
+  // "inside window" vs "outside window", not exact bucket values.
+  describe("admin analytics (platform-wide with time periods)", () => {
+    /** ISO timestamp `days` before `now`. Used to place test data inside a rolling window. */
+    function isoDaysAgo(days: number): string {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - days);
+      return d.toISOString();
+    }
+
+    describe("getAdminTotalRevenue", () => {
+      it("returns 0 when there are no purchases at all", () => {
+        expect(getAdminTotalRevenue({ period: "all" })).toBe(0);
+        expect(getAdminTotalRevenue({ period: "30d" })).toBe(0);
+      });
+
+      it("sums purchases across every instructor when period is 'all'", () => {
+        const otherInstructor = createSecondInstructor(testDb);
+        const otherCourse = createCourse(testDb, {
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          title: "Other",
+          slug: "other",
+        });
+        const s1 = createStudent(testDb, "s1@example.com");
+        const s2 = createStudent(testDb, "s2@example.com");
+
+        recordPurchase(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 4900,
+        });
+        recordPurchase(testDb, {
+          userId: s2.id,
+          courseId: otherCourse.id,
+          pricePaid: 2500,
+        });
+
+        expect(getAdminTotalRevenue({ period: "all" })).toBe(7400);
+      });
+
+      it("excludes purchases older than the rolling window", () => {
+        const s1 = createStudent(testDb, "s1@example.com");
+
+        // 3 days ago → inside 7d, 30d, 12m, all
+        recordPurchaseAt(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 1000,
+          createdAt: isoDaysAgo(3),
+        });
+        // 20 days ago → outside 7d, inside 30d
+        recordPurchaseAt(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 2000,
+          createdAt: isoDaysAgo(20),
+        });
+        // 400 days ago → only inside "all"
+        recordPurchaseAt(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 5000,
+          createdAt: isoDaysAgo(400),
+        });
+
+        expect(getAdminTotalRevenue({ period: "7d" })).toBe(1000);
+        expect(getAdminTotalRevenue({ period: "30d" })).toBe(3000);
+        expect(getAdminTotalRevenue({ period: "12m" })).toBe(3000);
+        expect(getAdminTotalRevenue({ period: "all" })).toBe(8000);
+      });
+    });
+
+    describe("getAdminTotalEnrollments", () => {
+      it("returns 0 when there are no enrollments", () => {
+        expect(getAdminTotalEnrollments({ period: "all" })).toBe(0);
+      });
+
+      it("counts every enrollment across every instructor for 'all'", () => {
+        const otherInstructor = createSecondInstructor(testDb);
+        const otherCourse = createCourse(testDb, {
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          title: "Other",
+          slug: "other",
+        });
+        const s1 = createStudent(testDb, "s1@example.com");
+        const s2 = createStudent(testDb, "s2@example.com");
+
+        recordEnrollment(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+        });
+        recordEnrollment(testDb, {
+          userId: s2.id,
+          courseId: otherCourse.id,
+        });
+
+        expect(getAdminTotalEnrollments({ period: "all" })).toBe(2);
+      });
+
+      it("filters by enrolledAt for rolling windows", () => {
+        const s1 = createStudent(testDb, "s1@example.com");
+        const s2 = createStudent(testDb, "s2@example.com");
+        const s3 = createStudent(testDb, "s3@example.com");
+
+        recordEnrollmentAt(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          enrolledAt: isoDaysAgo(3),
+        });
+        recordEnrollmentAt(testDb, {
+          userId: s2.id,
+          courseId: base.course.id,
+          enrolledAt: isoDaysAgo(20),
+        });
+        recordEnrollmentAt(testDb, {
+          userId: s3.id,
+          courseId: base.course.id,
+          enrolledAt: isoDaysAgo(400),
+        });
+
+        expect(getAdminTotalEnrollments({ period: "7d" })).toBe(1);
+        expect(getAdminTotalEnrollments({ period: "30d" })).toBe(2);
+        expect(getAdminTotalEnrollments({ period: "12m" })).toBe(2);
+        expect(getAdminTotalEnrollments({ period: "all" })).toBe(3);
+      });
+    });
+
+    describe("getAdminTopEarningCourse", () => {
+      it("returns null when there are no purchases", () => {
+        expect(getAdminTopEarningCourse({ period: "all" })).toBeNull();
+        expect(getAdminTopEarningCourse({ period: "30d" })).toBeNull();
+      });
+
+      it("returns the highest-revenue course across all instructors", () => {
+        const otherInstructor = createSecondInstructor(testDb);
+        const otherCourse = createCourse(testDb, {
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          title: "Other Course",
+          slug: "other",
+        });
+        const s1 = createStudent(testDb, "s1@example.com");
+        const s2 = createStudent(testDb, "s2@example.com");
+
+        // base.course: 1000 + 2000 = 3000
+        recordPurchase(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 1000,
+        });
+        recordPurchase(testDb, {
+          userId: s2.id,
+          courseId: base.course.id,
+          pricePaid: 2000,
+        });
+        // otherCourse: 5000 — higher
+        recordPurchase(testDb, {
+          userId: s1.id,
+          courseId: otherCourse.id,
+          pricePaid: 5000,
+        });
+
+        const top = getAdminTopEarningCourse({ period: "all" });
+        expect(top).toEqual({
+          courseId: otherCourse.id,
+          title: "Other Course",
+          revenueCents: 5000,
+        });
+      });
+
+      it("respects the rolling window when picking the winner", () => {
+        const otherInstructor = createSecondInstructor(testDb);
+        const otherCourse = createCourse(testDb, {
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          title: "Other Course",
+          slug: "other",
+        });
+        const s1 = createStudent(testDb, "s1@example.com");
+
+        // Recent: base.course wins the 7d window
+        recordPurchaseAt(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 3000,
+          createdAt: isoDaysAgo(2),
+        });
+        // Old & big: otherCourse would win "all" but is outside 7d
+        recordPurchaseAt(testDb, {
+          userId: s1.id,
+          courseId: otherCourse.id,
+          pricePaid: 50000,
+          createdAt: isoDaysAgo(400),
+        });
+
+        const recent = getAdminTopEarningCourse({ period: "7d" });
+        expect(recent?.courseId).toBe(base.course.id);
+        expect(recent?.revenueCents).toBe(3000);
+
+        const allTime = getAdminTopEarningCourse({ period: "all" });
+        expect(allTime?.courseId).toBe(otherCourse.id);
+        expect(allTime?.revenueCents).toBe(50000);
+      });
+
+      it("breaks ties by course id ascending so results are deterministic", () => {
+        const otherInstructor = createSecondInstructor(testDb);
+        const otherCourse = createCourse(testDb, {
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          title: "Other Course",
+          slug: "other",
+        });
+        const s1 = createStudent(testDb, "s1@example.com");
+
+        // Both courses earn exactly 1000 — winner must be the lower-id course.
+        recordPurchase(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 1000,
+        });
+        recordPurchase(testDb, {
+          userId: s1.id,
+          courseId: otherCourse.id,
+          pricePaid: 1000,
+        });
+
+        const top = getAdminTopEarningCourse({ period: "all" });
+        expect(top?.courseId).toBe(Math.min(base.course.id, otherCourse.id));
+      });
+
+      it("returns null when every purchase falls outside the window", () => {
+        const s1 = createStudent(testDb, "s1@example.com");
+        recordPurchaseAt(testDb, {
+          userId: s1.id,
+          courseId: base.course.id,
+          pricePaid: 1000,
+          createdAt: isoDaysAgo(400),
+        });
+
+        expect(getAdminTopEarningCourse({ period: "7d" })).toBeNull();
+        expect(getAdminTopEarningCourse({ period: "30d" })).toBeNull();
+        expect(getAdminTopEarningCourse({ period: "12m" })).toBeNull();
+        expect(getAdminTopEarningCourse({ period: "all" })?.courseId).toBe(
+          base.course.id
+        );
+      });
     });
   });
 });

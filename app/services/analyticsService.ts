@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { db } from "~/db";
 import {
   courses,
@@ -234,9 +234,7 @@ function buildMonthBuckets(
   const cursor = new Date(
     Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1)
   );
-  const stop = new Date(
-    Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1)
-  );
+  const stop = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1));
 
   while (cursor.getTime() <= stop.getTime()) {
     const year = cursor.getUTCFullYear();
@@ -499,7 +497,9 @@ export function getCourseDropOff(opts: CourseScope): DropOffLessonRow[] {
   if (courseLessons.length === 0) return [];
 
   const lessonIdToIndex = new Map<number, number>();
-  courseLessons.forEach((row, index) => lessonIdToIndex.set(row.lessonId, index));
+  courseLessons.forEach((row, index) =>
+    lessonIdToIndex.set(row.lessonId, index)
+  );
 
   const lessonIds = courseLessons.map((row) => row.lessonId);
 
@@ -1068,4 +1068,152 @@ export function getCourseRatingTrend(opts: CourseScope): TimeSeriesPoint[] {
     .all();
 
   return rows.map((r) => ({ bucket: r.bucket, value: r.value }));
+}
+
+// ─── Admin analytics ──────────────────────────────────────────────────────
+//
+// Platform-wide aggregates for the admin dashboard at /admin/analytics.
+// These differ from the instructor-facing functions above in two ways:
+//
+//   1. No `instructorId` scope — admin analytics always sums across every
+//      instructor on the platform.
+//   2. Accept a coarse `period` ("7d" | "30d" | "12m" | "all") that filters
+//      by the activity timestamp (`purchases.createdAt`, `enrollments.enrolledAt`).
+//
+// They intentionally live alongside but separate from the existing functions
+// rather than extending `AnalyticsScope`, because wiring period filtering
+// through the instructor path would change instructor-dashboard semantics
+// mid-phase. Admin and instructor analytics can diverge independently.
+
+/** Coarse-grained time windows admin analytics can filter by. */
+export type AdminTimePeriod = "7d" | "30d" | "12m" | "all";
+
+export type AdminScope = {
+  period: AdminTimePeriod;
+};
+
+/** Result of "which course earned the most revenue in the period". */
+export type TopEarningCourse = {
+  courseId: number;
+  title: string;
+  revenueCents: number;
+};
+
+/**
+ * Convert a time period to the earliest ISO-8601 timestamp that still counts
+ * as "inside the window", or `null` for "no lower bound" (`period === "all"`).
+ *
+ * Semantics: rolling window anchored to *now*. "30d" means "anything created
+ * in the last 30 days", not "the current calendar month". Matches how the
+ * instructor analytics labels in the UI (7d / 30d / 12m / all) read as
+ * recency windows rather than calendar boundaries.
+ */
+function periodToSinceIso(period: AdminTimePeriod): string | null {
+  if (period === "all") return null;
+  const now = new Date();
+  const since = new Date(now);
+  if (period === "7d") {
+    since.setUTCDate(since.getUTCDate() - 7);
+  } else if (period === "30d") {
+    since.setUTCDate(since.getUTCDate() - 30);
+  } else if (period === "12m") {
+    since.setUTCMonth(since.getUTCMonth() - 12);
+  }
+  return since.toISOString();
+}
+
+/**
+ * Total revenue across the entire platform for the given period, in cents.
+ *
+ * Zero when there are no purchases in the window — never null.
+ */
+export function getAdminTotalRevenue(opts: AdminScope): number {
+  const since = periodToSinceIso(opts.period);
+
+  const query = db
+    .select({
+      total: sql<number>`COALESCE(SUM(${purchases.pricePaid}), 0)`,
+    })
+    .from(purchases);
+
+  const row = since
+    ? query.where(gte(purchases.createdAt, since)).get()
+    : query.get();
+
+  return row?.total ?? 0;
+}
+
+/**
+ * Total enrollments across the entire platform for the given period.
+ *
+ * Counts `enrollments` rows whose `enrolledAt` falls inside the window,
+ * regardless of whether they were paid, coupon-redeemed, or free — the
+ * admin cards aim to answer "how many new students arrived?", not "how
+ * many paid?" (which is what revenue answers).
+ *
+ * Zero when the window is empty.
+ */
+export function getAdminTotalEnrollments(opts: AdminScope): number {
+  const since = periodToSinceIso(opts.period);
+
+  const query = db
+    .select({
+      total: sql<number>`COUNT(*)`,
+    })
+    .from(enrollments);
+
+  const row = since
+    ? query.where(gte(enrollments.enrolledAt, since)).get()
+    : query.get();
+
+  return row?.total ?? 0;
+}
+
+/**
+ * The single course that earned the most revenue during the period.
+ *
+ * Returns `null` when no purchases fell inside the window (the card then
+ * renders its empty state). Ties are broken by `courses.id ASC` so the
+ * result is deterministic — a tie picks the earlier-created course, which
+ * is what a human would do when eyeballing a list.
+ *
+ * Courses with zero revenue are never returned, even when the platform has
+ * exactly one course — "top earner" implies earning.
+ */
+export function getAdminTopEarningCourse(
+  opts: AdminScope
+): TopEarningCourse | null {
+  const since = periodToSinceIso(opts.period);
+
+  const revenueExpr = sql<number>`COALESCE(SUM(${purchases.pricePaid}), 0)`;
+
+  const baseQuery = db
+    .select({
+      courseId: courses.id,
+      title: courses.title,
+      revenueCents: revenueExpr,
+    })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id));
+
+  const row = since
+    ? baseQuery
+        .where(gte(purchases.createdAt, since))
+        .groupBy(courses.id)
+        .orderBy(desc(revenueExpr), courses.id)
+        .limit(1)
+        .get()
+    : baseQuery
+        .groupBy(courses.id)
+        .orderBy(desc(revenueExpr), courses.id)
+        .limit(1)
+        .get();
+
+  if (!row || row.revenueCents <= 0) return null;
+
+  return {
+    courseId: row.courseId,
+    title: row.title,
+    revenueCents: row.revenueCents,
+  };
 }
