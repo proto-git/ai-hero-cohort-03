@@ -140,9 +140,10 @@ export default function AdminAnalytics({ loaderData }: Route.ComponentProps) {
             label="Top earning course"
             value={
               topEarningCourse
-                ? `${topEarningCourse.title} · ${formatRevenueCents(topEarningCourse.revenueCents)}`
+                ? formatRevenueCents(topEarningCourse.revenueCents)
                 : "—"
             }
+            sublabel={topEarningCourse?.title}
             icon={<Trophy className="size-4" />}
           />
         </div>
