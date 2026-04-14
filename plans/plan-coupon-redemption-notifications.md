@@ -8,8 +8,8 @@ Durable decisions that apply across all phases:
 
 - **Schema**: No migration needed. The `notifications.type` column is text; add `CouponRedemption = "coupon_redemption"` to the `NotificationType` enum.
 - **Notification content**: Title is `"Seat Claimed"`. Message format: `"{userName} redeemed a coupon for {courseTitle} ({remainingSeats} of {totalSeats} seats remaining)"`. Link URL: `/team`.
-- **Recipients**: All users with `admin` role in `team_members` for the team that owns the redeemed coupon. One notification record per admin.
-- **Trigger**: Inside the coupon service's `redeemCoupon` function, after successful redemption (coupon marked redeemed + enrollment created).
+- **Recipients**: All users with `admin` role in `team_members` for the team that owns the redeemed coupon get a `coupon_redemption` notification. The course instructor also gets the standard `enrollment` notification (same as a direct paid enrollment), so coupon-redeemed students are visible to instructors the same way directly-enrolled ones are. One notification record per recipient.
+- **Trigger**: Inside the coupon service's `redeemCoupon` function, after successful redemption. `redeemCoupon` routes through `enrollUser(userId, courseId, false, true)` (skipValidation=true) to create the enrollment, which means the existing instructor notification fires automatically. The team-admin notification is created separately inside `redeemCoupon` using the per-course seat counts.
 - **Seat counts**: Per-course counts for the specific `teamId` + `courseId`. Calculated at notification creation time and baked into the message string.
 - **Bell visibility**: Sidebar notification bell shown when `role === Instructor || isTeamAdmin`. Layout loader fetches notification data under the same condition.
 
@@ -17,7 +17,7 @@ Durable decisions that apply across all phases:
 
 ## Phase 1: Coupon redemption notifications end-to-end
 
-**User stories**: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+**User stories**: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12
 
 ### What to build
 
@@ -38,3 +38,4 @@ Extend the notification bell's visibility so that team admins (not just instruct
 - [ ] Existing notification functionality (mark as read, mark all as read) works for the new notification type
 - [ ] Service-level tests cover: notification creation on redemption, correct recipients, correct message content, seat count accuracy, no notification on failed redemption
 - [ ] A user who is both instructor and team admin sees both notification types in one bell
+- [ ] Coupon redemption also creates an `enrollment` notification for the course instructor (same as a direct paid enrollment), via `redeemCoupon` routing through `enrollUser`

@@ -11,6 +11,7 @@ import {
   NotificationType,
 } from "~/db/schema";
 import { createNotification } from "./notificationService";
+import { enrollUser } from "./enrollmentService";
 import crypto from "crypto";
 
 // ─── Coupon Service ───
@@ -119,11 +120,11 @@ export function redeemCoupon(
     .where(eq(coupons.id, coupon.id))
     .run();
 
-  const enrollment = db
-    .insert(enrollments)
-    .values({ userId, courseId: coupon.courseId })
-    .returning()
-    .get();
+  // Route through enrollUser so the instructor still gets their "New Enrollment"
+  // notification — coupon-redeemed students should be visible to instructors
+  // the same as directly-enrolled ones. skipValidation=true because redeemCoupon
+  // has already validated above.
+  const enrollment = enrollUser(userId, coupon.courseId, false, true);
 
   notifyTeamAdminsOfRedemption(coupon.teamId, coupon.courseId, userId);
 

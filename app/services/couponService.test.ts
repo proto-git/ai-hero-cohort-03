@@ -437,6 +437,22 @@ describe("couponService", () => {
       expect(notif.message).toContain("1 of 2 seats remaining");
     });
 
+    it("also notifies the course instructor (so they can welcome coupon-redeemed students)", () => {
+      const { team, purchase } = setupTeamAndPurchase();
+      const [coupon] = generateCoupons(team.id, base.course.id, purchase.id, 1);
+      const redeemer = createRedeemer();
+
+      redeemCoupon(coupon.code, redeemer.id, "US");
+
+      const instructorNotifs = getNotificationsFor(base.instructor.id);
+      expect(instructorNotifs).toHaveLength(1);
+      expect(instructorNotifs[0].type).toBe(schema.NotificationType.Enrollment);
+      expect(instructorNotifs[0].title).toBe("New Enrollment");
+      expect(instructorNotifs[0].message).toBe(
+        `${redeemer.name} enrolled in ${base.course.title}`
+      );
+    });
+
     it("does not create a notification when redemption fails", () => {
       const { team, purchase } = setupTeamAndPurchase();
       const [coupon] = generateCoupons(team.id, base.course.id, purchase.id, 1);

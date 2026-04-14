@@ -23,6 +23,7 @@ The notification bell (currently only visible to instructors) will also be shown
 9. As a team admin, I want to mark all notifications as read at once, so that I can quickly clear a backlog after checking the team page.
 10. As a team admin who is also an instructor, I want to see both enrollment and coupon redemption notifications in the same bell, so that I have a unified notification experience.
 11. As a team with multiple admins, I want all admins to receive the redemption notification, so that no admin is left out of the loop.
+12. As an instructor, I want to be notified of every new enrollment — whether the student paid directly or redeemed a team coupon — so that I can welcome them regardless of how they got there.
 
 ## Implementation Decisions
 
@@ -45,13 +46,15 @@ The notification bell (currently only visible to instructors) will also be shown
 
 ### Notification Recipients
 
-- All users with the `admin` role in the `team_members` table for the team that owns the redeemed coupon.
-- One notification is created per admin (same pattern as enrollment notifications — one record per recipient).
+- **Team admins**: all users with the `admin` role in the `team_members` table for the team that owns the redeemed coupon receive a `coupon_redemption` notification.
+- **Course instructor**: also receives the standard `enrollment` notification ("New Enrollment"), same as they would for a directly-paid enrollment. This keeps instructor visibility into their students consistent regardless of how the student arrived.
+- One notification record is created per recipient.
 
 ### Trigger Point
 
-- The notification is created inside the `redeemCoupon` function in the coupon service, after a successful redemption (coupon marked as redeemed and enrollment created).
-- The trigger needs the redeeming user's name, the course title, the team ID, and the seat counts — some of which require additional lookups.
+- The coupon-redemption notification (team admins) is created inside the `redeemCoupon` function in the coupon service, after a successful redemption (coupon marked as redeemed and enrollment created).
+- The enrollment notification (instructor) is created by `enrollUser` in the enrollment service. `redeemCoupon` routes through `enrollUser` (with `skipValidation=true` since redeemCoupon has already validated) rather than inserting into `enrollments` directly, so the instructor notification fires for coupon-sourced enrollments too.
+- The team-admin trigger needs the redeeming user's name, the course title, the team ID, and the seat counts — some of which require additional lookups.
 
 ### Notification Bell Visibility
 
